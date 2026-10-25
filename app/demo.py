@@ -29,7 +29,8 @@ SIM_HASH_PREFIX = "demo-sim-"          # fake agent token hashes; no real token 
 RESET_NOTE = os.environ.get("LAT_DEMO_RESET_NOTE", "Changes reset every night at 03:00 UK time.")
 
 # Paths the public must not reach in demo mode (POST only).
-BLOCKED_POSTS = ("/agent/token", "/agent/revoke", "/api/agent/heartbeat", "/logout", "/setup", "/login", "/settings")
+BLOCKED_POSTS = ("/agent/token", "/agent/revoke", "/api/agent/heartbeat", "/logout", "/setup", "/login", "/settings",
+                 "/people", "/invite")
 
 _writes: dict[str, deque] = defaultdict(deque)
 

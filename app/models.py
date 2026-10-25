@@ -73,8 +73,12 @@ class User(Base):
     email = Column(String(254), unique=True, nullable=False, index=True)
     password_hash = Column(String(255), nullable=False)
     is_admin = Column(Boolean, default=False, nullable=False)
+    # Deactivated users keep their audit history but cannot log in.
+    is_active = Column(Boolean, default=True, nullable=False, server_default="true")
+    name = Column(String(80), nullable=True)
     timezone = Column(String(64), nullable=False, default="Europe/London", server_default="Europe/London")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    last_login_at = Column(DateTime(timezone=True), nullable=True)
 
 
 class UserSession(Base):
@@ -84,3 +88,23 @@ class UserSession(Base):
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     expires_at = Column(DateTime(timezone=True), nullable=False)
     user = relationship("User")
+
+
+class Invite(Base):
+    """A single-use link that lets a colleague set their own password.
+
+    Self-hosted installs have no mail server, so the admin copies the link and
+    sends it however they like. Only the SHA-256 of the token is stored, so a
+    leaked database dump cannot be replayed to claim an account.
+    """
+    __tablename__ = "invites"
+    id = Column(Integer, primary_key=True)
+    token_hash = Column(String(64), unique=True, nullable=False, index=True)
+    email = Column(String(254), nullable=False, index=True)
+    name = Column(String(80), nullable=True)
+    is_admin = Column(Boolean, default=False, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    accepted_at = Column(DateTime(timezone=True), nullable=True)
+    invited_by_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    invited_by = relationship("User")

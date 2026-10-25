@@ -30,8 +30,9 @@ Lean Asset Tracker sits in between: install in a few minutes, use it one-handed 
 - 🌍 **Real-world locations.** Nested locations (Site / Room / Rack / U), plus country, region, city and datacentre. Pick a country and the timezone fills itself in.
 - 📥 **Messy CSV in, clean CSV out.** Import understands headers like `Hardware`, `Device`, `Item`, `SN` and `Where`. Exports re-import cleanly. Formula-injection safe.
 - 🗄️ **Archive, restore, delete.** Retired kit keeps its history. Permanent delete needs the name typed.
+- 👥 **Your team, not just you.** Invite colleagues with a single-use link (no mail server needed), set them as admin or member, deactivate someone the moment they leave. Change your own email and password; a password change signs out every other device. The last admin can never be demoted, deactivated or deleted, so an instance can't be locked out of itself.
 - 📱 **Mobile first.** Built and tested on a phone first, then tablet, laptop and desktop.
-- 🔒 **Private by default.** Login required, scrypt-hashed passwords, rate-limited sign-in, agent tokens stored hashed, no telemetry.
+- 🔒 **Private by default.** Login required, scrypt-hashed passwords, rate-limited sign-in, agent and invite tokens stored hashed, no telemetry.
 
 ## Quick start (self-hosted)
 
@@ -85,7 +86,8 @@ cd demo && cp .env.example .env && docker compose up -d --build   # http://127.0
 - [ ] `latctl update` with automatic rollback
 - [ ] Recurring maintenance and an iCal feed
 - [ ] Components and rack positions inside servers
-- [ ] Multi-user roles; MSP workspaces
+- [x] Multi-user accounts, roles and invites
+- [ ] Per-location permissions; MSP workspaces
 
 Ideas and bug reports are welcome. Please open an issue.
 

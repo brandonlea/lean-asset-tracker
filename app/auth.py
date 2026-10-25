@@ -25,7 +25,8 @@ SCRYPT = dict(n=2**14, r=8, p=1, dklen=32)
 MIN_PASSWORD = 10
 
 # Paths reachable without a session. Agent endpoints use their own bearer tokens.
-PUBLIC_PREFIXES = ("/login", "/setup", "/health", "/api/agent/", "/agent/lat-agent.py")
+# /invite is public by necessity: the invitee has no account until they accept.
+PUBLIC_PREFIXES = ("/login", "/setup", "/health", "/api/agent/", "/agent/lat-agent.py", "/invite/")
 
 # First-run setup token: from env, or generated and logged once at startup.
 SETUP_TOKEN = os.environ.get("LAT_SETUP_TOKEN") or secrets.token_urlsafe(18)
@@ -70,7 +71,11 @@ def authenticate(db: Session, email: str, password: str) -> User | None:
     if not user:
         verify_password(password, _DUMMY_HASH)
         return None
-    return user if verify_password(password, user.password_hash) else None
+    if not verify_password(password, user.password_hash):
+        return None
+    # Deactivated accounts fail exactly like a wrong password: the caller must
+    # not be able to probe which colleagues still have access.
+    return user if user.is_active else None
 
 
 def create_session(db: Session, user: User) -> str:
@@ -88,7 +93,25 @@ def user_from_token(db: Session, token: str | None) -> User | None:
         return None
     s = (db.query(UserSession).filter(UserSession.token_hash == sha256(token),
                                       UserSession.expires_at > datetime.now(timezone.utc)).first())
-    return s.user if s else None
+    if not s or not s.user:
+        return None
+    # Deactivating someone must take effect immediately, not in 30 days when
+    # their cookie happens to expire.
+    return s.user if s.user.is_active else None
+
+
+def revoke_sessions(db: Session, user_id: int, keep_token: str | None = None) -> int:
+    """Sign a user out everywhere. Returns how many sessions were killed.
+
+    `keep_token` spares the caller's own session, so changing your password
+    doesn't log you out of the tab you're sitting in.
+    """
+    q = db.query(UserSession).filter(UserSession.user_id == user_id)
+    if keep_token:
+        q = q.filter(UserSession.token_hash != sha256(keep_token))
+    killed = q.delete(synchronize_session=False)
+    db.commit()
+    return killed
 
 
 def destroy_session(db: Session, token: str | None) -> None:

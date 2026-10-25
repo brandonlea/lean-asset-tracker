@@ -3,6 +3,7 @@ import csv
 import io
 from html import escape as html_escape
 import json
+import logging
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
@@ -18,14 +19,17 @@ from sqlalchemy.orm import Session
 from . import agent as ag
 from . import auth
 from .database import SessionLocal, engine, get_db
-from .models import Asset, AuditLog, Base, Location, Maintenance, User
+from .models import Asset, AuditLog, Base, Invite, Location, Maintenance, User, UserSession
 from . import demo
 from . import devices as dv
 from . import geo
 from . import timezones as tzs
+from . import users as usr
 from .scheduling import WindowError, WindowView, build_window, humanise_duration, overlaps, window_state
 
-VERSION = "0.5.1"
+log = logging.getLogger("lat.main")
+
+VERSION = "0.6.0"
 APP_DIR = Path(__file__).parent
 
 app = FastAPI(title="Lean Asset Tracker", version=VERSION)
@@ -60,6 +64,9 @@ def startup():
             "ALTER TABLE assets ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ",
             "CREATE INDEX IF NOT EXISTS ix_assets_archived_at ON assets (archived_at)",
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS timezone VARCHAR(64) NOT NULL DEFAULT 'Europe/London'",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS name VARCHAR(80)",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ",
             "CREATE UNIQUE INDEX IF NOT EXISTS ix_assets_agent_token_hash ON assets (agent_token_hash)",
         ):
             conn.execute(text(stmt))
@@ -117,6 +124,7 @@ async def require_login(request: Request, call_next):
         if user:
             request.state.user_email = user.email
             request.state.user_id = user.id
+            request.state.user_is_admin = bool(user.is_admin)
             request.state.user_tz = tzs.valid_tz(user.timezone) or tzs.DEFAULT_TZ
             return await call_next(request)
         needs_setup = db.query(User).count() == 0
@@ -162,6 +170,7 @@ async def _demo_gate(request: Request, call_next):
         if not user:
             return JSONResponse({"detail": "Demo is resetting, try again in a moment."}, status_code=503)
         request.state.user_email, request.state.user_id = "Demo user", user.id
+        request.state.user_is_admin = True
         request.state.user_tz = tzs.valid_tz(request.cookies.get("lat_demo_tz")) or tzs.DEFAULT_TZ
     finally:
         db.close()
@@ -246,6 +255,8 @@ def login_submit(request: Request, email: str = Form(...), password: str = Form(
         return templates.TemplateResponse("login.html", {"request": request, "email": email, "next": next,
                                           "error": "Email or password is wrong."}, status_code=401)
     auth.throttle.reset(ip)
+    user.last_login_at = datetime.now(timezone.utc)
+    db.commit()
     resp = RedirectResponse(next, status_code=303)
     _set_session_cookie(resp, request, auth.create_session(db, user))
     return resp
@@ -263,7 +274,8 @@ def logout(request: Request, db: Session = Depends(get_db)):
 def _settings_panel(request: Request, **extra):
     return templates.TemplateResponse("_settings.html", {
         "request": request, "user_tz": user_tz_name(request), "tz_choices": tzs.choices(),
-        "user_email": getattr(request.state, "user_email", ""), **extra})
+        "user_email": getattr(request.state, "user_email", ""),
+        "is_admin": getattr(request.state, "user_is_admin", False), **extra})
 
 
 @app.get("/settings", response_class=HTMLResponse)
@@ -282,6 +294,243 @@ def settings_save(request: Request, timezone_name: str = Form("", alias="timezon
     request.state.user_tz = new
     resp = _settings_panel(request, flash=f"Saved. Times now show in {new}.")
     resp.headers["HX-Trigger"] = "tzChanged"
+    return resp
+
+
+# ---------------------------------------------------------------- account: email / password
+@app.post("/settings/email", response_class=HTMLResponse)
+def change_email(request: Request, email: str = Form(""), current_password: str = Form(""),
+                 db: Session = Depends(get_db)):
+    """Changing the address you log in with is a credential change: re-auth first."""
+    user = db.query(User).filter(User.id == request.state.user_id).first()
+    new_email = usr.normalise_email(email)
+
+    if not auth.verify_password(current_password, user.password_hash):
+        return _settings_panel(request, email_error="Current password is wrong.")
+    if problem := usr.email_problem(new_email):
+        return _settings_panel(request, email_error=problem)
+    if new_email == user.email:
+        return _settings_panel(request, email_error="That's already your email address.")
+    if db.query(User).filter(User.email == new_email, User.id != user.id).first():
+        return _settings_panel(request, email_error="Another account already uses that email.")
+
+    old = user.email
+    user.email = new_email
+    db.commit()
+    request.state.user_email = new_email
+    log.info("user %s changed email from %s", user.id, old)
+    return _settings_panel(request, flash=f"Email changed to {new_email}.")
+
+
+@app.post("/settings/password", response_class=HTMLResponse)
+def change_password(request: Request, current_password: str = Form(""), new_password: str = Form(""),
+                    confirm: str = Form(""), db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.id == request.state.user_id).first()
+
+    if not auth.verify_password(current_password, user.password_hash):
+        return _settings_panel(request, pw_error="Current password is wrong.")
+    if new_password != confirm:
+        return _settings_panel(request, pw_error="New passwords don't match.")
+    if new_password == current_password:
+        return _settings_panel(request, pw_error="That's your current password. Pick a new one.")
+    if problem := auth.password_problem(new_password):
+        return _settings_panel(request, pw_error=problem)
+
+    user.password_hash = auth.hash_password(new_password)
+    db.commit()
+    # A password change should boot anyone who copied the old session cookie,
+    # but not the tab the user is sitting in.
+    killed = auth.revoke_sessions(db, user.id, keep_token=request.cookies.get(auth.COOKIE))
+    log.info("user %s changed password, revoked %s other session(s)", user.id, killed)
+    note = f" Signed out of {killed} other device{'s' if killed != 1 else ''}." if killed else ""
+    return _settings_panel(request, flash=f"Password updated.{note}")
+
+
+# ---------------------------------------------------------------- people (admin only)
+def _require_admin(request: Request):
+    if not getattr(request.state, "user_is_admin", False):
+        raise HTTPException(403, "Admins only.")
+
+
+def _people_panel(request: Request, db: Session, **extra):
+    users = db.query(User).order_by(User.is_active.desc(), User.email).all()
+    invites = (db.query(Invite).filter(Invite.accepted_at.is_(None))
+               .order_by(Invite.created_at.desc()).all())
+    now = datetime.now(timezone.utc)
+    return templates.TemplateResponse("_people.html", {
+        "request": request, "users": users,
+        "invites": [i for i in invites if usr.invite_state(i.expires_at, i.accepted_at, now) == "pending"],
+        "me_id": request.state.user_id,
+        "active_admins": sum(1 for u in users if u.is_admin and u.is_active),
+        # fmt_dt wants a ZoneInfo, not the zone's name
+        "role_help": usr.ROLE_HELP, "tzinfo_user": tzs.get_tz(user_tz_name(request)), **extra})
+
+
+@app.get("/people", response_class=HTMLResponse)
+def people_page(request: Request, db: Session = Depends(get_db)):
+    _require_admin(request)
+    return _people_panel(request, db)
+
+
+@app.post("/people/invite", response_class=HTMLResponse)
+def invite_create(request: Request, email: str = Form(""), name: str = Form(""),
+                  role: str = Form("member"), db: Session = Depends(get_db)):
+    """Mint a single-use link. No mail server needed — the admin sends it."""
+    _require_admin(request)
+    email, name = usr.normalise_email(email), usr.normalise_name(name)
+
+    if problem := usr.email_problem(email):
+        return _people_panel(request, db, invite_error=problem, form_email=email, form_name=name)
+    if problem := usr.role_problem(role):
+        return _people_panel(request, db, invite_error=problem, form_email=email, form_name=name)
+    if db.query(User).filter(User.email == email).first():
+        return _people_panel(request, db, invite_error="Someone with that email already has an account.",
+                             form_email=email, form_name=name)
+
+    # Re-inviting the same address replaces the old pending link rather than
+    # leaving two valid tokens floating around.
+    db.query(Invite).filter(Invite.email == email, Invite.accepted_at.is_(None)).delete()
+
+    token = usr.new_invite_token()
+    db.add(Invite(token_hash=auth.sha256(token), email=email, name=name or None,
+                  is_admin=usr.is_admin_role(role), expires_at=usr.invite_expiry(),
+                  invited_by_id=request.state.user_id))
+    db.commit()
+    log.info("user %s invited %s as %s", request.state.user_id, email, role)
+    return _people_panel(request, db, invite_link=usr.invite_url(public_base(request), token),
+                         invite_email=email)
+
+
+@app.post("/people/invite/{invite_id}/revoke", response_class=HTMLResponse)
+def invite_revoke(request: Request, invite_id: int, db: Session = Depends(get_db)):
+    _require_admin(request)
+    inv = db.query(Invite).filter(Invite.id == invite_id, Invite.accepted_at.is_(None)).first()
+    if not inv:
+        return _people_panel(request, db, error="That invite has already been used or revoked.")
+    email = inv.email
+    db.delete(inv)
+    db.commit()
+    return _people_panel(request, db, flash=f"Invite for {email} revoked.")
+
+
+def _guarded_target(request: Request, db: Session, user_id: int, action: str):
+    """Load the target user and run both safety guards. -> (user, problem)."""
+    target = db.query(User).filter(User.id == user_id).first()
+    if not target:
+        return None, "That account no longer exists."
+    if problem := usr.self_action_problem(action, is_self=(target.id == request.state.user_id)):
+        return target, problem
+    others = (db.query(User).filter(User.is_admin.is_(True), User.is_active.is_(True),
+                                    User.id != target.id).count())
+    return target, usr.lockout_problem(action, target_is_admin=bool(target.is_admin),
+                                       target_is_active=bool(target.is_active),
+                                       other_active_admins=others)
+
+
+@app.post("/people/{user_id}/role", response_class=HTMLResponse)
+def set_role(request: Request, user_id: int, role: str = Form(""), db: Session = Depends(get_db)):
+    _require_admin(request)
+    if problem := usr.role_problem(role):
+        return _people_panel(request, db, error=problem)
+    want_admin = usr.is_admin_role(role)
+    # Only *removing* admin can cause a lockout; promoting is always safe.
+    target, problem = _guarded_target(request, db, user_id, "demote" if not want_admin else "promote")
+    if target is None:
+        return _people_panel(request, db, error=problem)
+    if not want_admin and problem:
+        return _people_panel(request, db, error=problem)
+    if bool(target.is_admin) == want_admin:
+        return _people_panel(request, db, flash=f"{target.email} is already {role}.")
+    target.is_admin = want_admin
+    db.commit()
+    log.info("user %s set %s to %s", request.state.user_id, target.id, role)
+    return _people_panel(request, db, flash=f"{target.email} is now {role}.")
+
+
+@app.post("/people/{user_id}/active", response_class=HTMLResponse)
+def set_active(request: Request, user_id: int, active: str = Form(""), db: Session = Depends(get_db)):
+    _require_admin(request)
+    want_active = active == "1"
+    target, problem = _guarded_target(request, db, user_id, "reactivate" if want_active else "deactivate")
+    if target is None:
+        return _people_panel(request, db, error=problem)
+    if not want_active and problem:
+        return _people_panel(request, db, error=problem)
+    target.is_active = want_active
+    db.commit()
+    if not want_active:
+        # Revoke straight away; waiting for the cookie to expire is not security.
+        killed = auth.revoke_sessions(db, target.id)
+        log.info("user %s deactivated %s, revoked %s session(s)", request.state.user_id, target.id, killed)
+        return _people_panel(request, db, flash=f"{target.email} deactivated and signed out.")
+    return _people_panel(request, db, flash=f"{target.email} can sign in again.")
+
+
+@app.post("/people/{user_id}/delete", response_class=HTMLResponse)
+def delete_user(request: Request, user_id: int, confirm_email: str = Form(""),
+                db: Session = Depends(get_db)):
+    _require_admin(request)
+    target, problem = _guarded_target(request, db, user_id, "delete")
+    if target is None:
+        return _people_panel(request, db, error=problem)
+    if problem:
+        return _people_panel(request, db, error=problem)
+    if usr.normalise_email(confirm_email) != target.email:
+        return _people_panel(request, db, error="Type the exact email address to confirm deletion.")
+    email = target.email
+    db.query(UserSession).filter(UserSession.user_id == target.id).delete()
+    db.delete(target)
+    db.commit()
+    log.info("user %s deleted account %s", request.state.user_id, email)
+    return _people_panel(request, db, flash=f"{email} deleted. Device history is unaffected.")
+
+
+# ---------------------------------------------------------------- accepting an invite
+def _load_invite(db: Session, token: str) -> Invite | None:
+    inv = db.query(Invite).filter(Invite.token_hash == auth.sha256(token)).first()
+    if not inv or usr.invite_state(inv.expires_at, inv.accepted_at) != "pending":
+        return None
+    return inv
+
+
+@app.get("/invite/{token}", response_class=HTMLResponse)
+def invite_page(request: Request, token: str, db: Session = Depends(get_db)):
+    inv = _load_invite(db, token)
+    if not inv:
+        return templates.TemplateResponse("invite.html", {"request": request, "dead": True}, status_code=410)
+    return templates.TemplateResponse("invite.html", {
+        "request": request, "token": token, "email": inv.email, "name": inv.name or "",
+        "tz_choices": tzs.choices(), "user_tz": tzs.DEFAULT_TZ})
+
+
+@app.post("/invite/{token}", response_class=HTMLResponse)
+def invite_accept(request: Request, token: str, password: str = Form(""), confirm: str = Form(""),
+                  name: str = Form(""), timezone_name: str = Form("", alias="timezone"),
+                  db: Session = Depends(get_db)):
+    inv = _load_invite(db, token)
+    if not inv:
+        return templates.TemplateResponse("invite.html", {"request": request, "dead": True}, status_code=410)
+
+    ctx = {"request": request, "token": token, "email": inv.email, "name": name or inv.name or "",
+           "tz_choices": tzs.choices(), "user_tz": tzs.valid_tz(timezone_name) or tzs.DEFAULT_TZ}
+    if password != confirm:
+        return templates.TemplateResponse("invite.html", {**ctx, "error": "Passwords don't match."}, status_code=400)
+    if problem := auth.password_problem(password):
+        return templates.TemplateResponse("invite.html", {**ctx, "error": problem}, status_code=400)
+    if db.query(User).filter(User.email == inv.email).first():
+        return templates.TemplateResponse("invite.html", {**ctx,
+            "error": "An account with that email already exists. Try signing in."}, status_code=409)
+
+    user = User(email=inv.email, password_hash=auth.hash_password(password),
+                is_admin=bool(inv.is_admin), is_active=True,
+                name=usr.normalise_name(name) or inv.name,
+                timezone=tzs.valid_tz(timezone_name) or tzs.DEFAULT_TZ)
+    db.add(user)
+    inv.accepted_at = datetime.now(timezone.utc)
+    db.commit()
+    log.info("invite accepted: %s (admin=%s)", user.email, user.is_admin)
+    resp = RedirectResponse("/", status_code=303)
+    _set_session_cookie(resp, request, auth.create_session(db, user))
     return resp
 
 
