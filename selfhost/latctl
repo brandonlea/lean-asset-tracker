@@ -111,11 +111,15 @@ cmd_update() {
 }
 
 cmd_uninstall() {
-  c_warn "This stops the app. Add --purge to ALSO delete all data."
   if [ "${1:-}" = "--purge" ]; then
-    if [ "${LAT_YES:-}" != "1" ]; then read -r -p "Type 'delete' to wipe all data: " a; [ "$a" = "delete" ] || die "Cancelled."; fi
+    c_warn "This deletes the containers, the image AND all your data."
+    if [ "${LAT_YES:-}" != "1" ]; then
+      [ -t 0 ] || die "Refusing to purge without a terminal. Re-run with LAT_YES=1 to confirm."
+      read -r -p "Type 'delete' to wipe all data: " a; [ "$a" = "delete" ] || die "Cancelled."
+    fi
     dc down -v --rmi local; rm -f "$ENV_FILE"; c_ok "Removed containers, image and data."
   else
+    c_warn "This stops the app. Add --purge to ALSO delete all data."
     dc down; c_ok "Stopped. Data kept; './latctl start' brings it back."
   fi
 }

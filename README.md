@@ -38,8 +38,12 @@ Lean Asset Tracker sits in between: install in a few minutes, use it one-handed 
 You need Linux (or a Pi 4/5 64-bit, or a NAS) with Docker and Compose v2, about 600 MB of disk and 300 MB of RAM.
 
 ```bash
-curl -fLO https://hallveckdigital.co.uk/download/lean-asset-tracker-0.5.0.tar.gz
-tar xzf lean-asset-tracker-0.5.0.tar.gz
+# always fetches the current release (-OJ keeps the real versioned filename)
+curl -fsSL -OJ https://hallveckdigital.co.uk/download/latest
+curl -fsSL -OJ https://hallveckdigital.co.uk/download/latest.sha256
+sha256sum -c lean-asset-tracker-*.tar.gz.sha256   # verify before you run it
+
+tar xzf lean-asset-tracker-*.tar.gz
 cd lean-asset-tracker
 ./latctl install
 ```
