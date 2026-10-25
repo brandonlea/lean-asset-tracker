@@ -95,6 +95,16 @@ async def _demo_heartbeats():
 
 # ---------------------------------------------------------------- auth middleware
 @app.middleware("http")
+async def https_redirect(request: Request, call_next):
+    """Behind Cloudflare with an https LAT_PUBLIC_URL, send plain-HTTP visitors to HTTPS."""
+    import os
+    if (os.environ.get("LAT_PUBLIC_URL", "").startswith("https://")
+            and '"scheme":"http"' in request.headers.get("cf-visitor", "").replace(" ", "")):
+        return RedirectResponse(str(request.url.replace(scheme="https", port=None)), status_code=301)
+    return await call_next(request)
+
+
+@app.middleware("http")
 async def require_login(request: Request, call_next):
     path = request.url.path
     if demo.ENABLED:
