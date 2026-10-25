@@ -1,0 +1,135 @@
+#!/usr/bin/env bash
+# latctl: install and manage a self-hosted Lean Asset Tracker.
+# Usage: ./latctl <install|start|stop|restart|status|logs|backup|restore FILE|update|uninstall>
+set -euo pipefail
+cd "$(dirname "$0")"
+
+VERSION="$(cat VERSION 2>/dev/null || echo dev)"
+ENV_FILE=".env"
+BACKUP_DIR="${LAT_BACKUP_DIR:-./backups}"
+
+c_ok()   { printf '\033[32m✔\033[0m %s\n' "$*"; }
+c_info() { printf '\033[34m›\033[0m %s\n' "$*"; }
+c_warn() { printf '\033[33m!\033[0m %s\n' "$*"; }
+die()    { printf '\033[31m✘ %s\033[0m\n' "$*" >&2; exit 1; }
+
+dc() { docker compose --env-file "$ENV_FILE" "$@"; }
+
+envval() { grep -E "^$1=" "$ENV_FILE" | tail -1 | cut -d= -f2-; }
+
+preflight() {
+  command -v docker >/dev/null || die "Docker not found. Install it: https://docs.docker.com/engine/install/"
+  docker compose version >/dev/null 2>&1 || die "Docker Compose v2 not found (needs 'docker compose', not 'docker-compose')."
+  command -v curl >/dev/null || die "curl not found. Install it (e.g. 'apt install curl')."
+  docker info >/dev/null 2>&1 || die "Can't talk to Docker. Is it running, and are you root or in the 'docker' group?"
+}
+
+wait_healthy() {
+  local port; port="$(envval LAT_PORT)"
+  c_info "Waiting for the app to become healthy…"
+  for _ in $(seq 1 60); do
+    if curl -fsS "http://127.0.0.1:${port}/health" >/dev/null 2>&1; then
+      c_ok "Healthy on port ${port}"; return 0
+    fi
+    sleep 2
+  done
+  dc logs --tail 40 app || true
+  die "App did not become healthy in 2 minutes (logs above)."
+}
+
+show_url() {
+  local port bind ip; port="$(envval LAT_PORT)"; bind="$(envval LAT_BIND)"
+  ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+  echo
+  c_ok "Lean Asset Tracker ${VERSION} is running"
+  echo "   This machine:  http://127.0.0.1:${port}"
+  [ "$bind" = "0.0.0.0" ] && [ -n "$ip" ] && echo "   On your LAN:   http://${ip}:${port}"
+  local host="127.0.0.1"; [ "$bind" = "0.0.0.0" ] && [ -n "$ip" ] && host="$ip"
+  if curl -s -o /dev/null -w '%{redirect_url}' "http://127.0.0.1:${port}/login" | grep -q '/setup'; then
+    echo
+    c_info "First run: create your admin account here (one-time link):"
+    echo "   http://${host}:${port}/setup?token=$(envval LAT_SETUP_TOKEN)"
+  fi
+  echo
+  c_warn "Keep it on your LAN or a VPN (e.g. Tailscale). Don't port-forward it without HTTPS."
+}
+
+cmd_install() {
+  preflight
+  if [ -f "$ENV_FILE" ]; then
+    c_info "Existing .env found; keeping your settings and password."
+  else
+    local port="${LAT_PORT:-8080}" bind="${LAT_BIND:-0.0.0.0}"
+    # 32 random alphanumerics; no openssl dependency. pipefail is off in this subshell
+    # because head closing the pipe gives tr a SIGPIPE (exit 141), which is expected here.
+    local pw; pw="$(set +o pipefail; LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32)"
+    [ "${#pw}" -eq 32 ] || die "Couldn't generate a database password."
+    local st; st="$(set +o pipefail; LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 24)"
+    umask 077
+    cat > "$ENV_FILE" <<EOF
+# Lean Asset Tracker settings. Generated $(date -u +%FT%TZ)
+LAT_VERSION=${VERSION}
+LAT_PROJECT=${LAT_PROJECT:-lean-asset-tracker}
+LAT_PORT=${port}
+LAT_BIND=${bind}
+TZ=${TZ:-Europe/London}
+POSTGRES_PASSWORD=${pw}
+LAT_SETUP_TOKEN=${st}
+EOF
+    c_ok "Created .env with a random database password (file mode 600)"
+  fi
+  c_info "Building and starting containers (first run takes a few minutes)…"
+  dc up -d --build
+  wait_healthy
+  show_url
+}
+
+cmd_backup() {
+  [ -f "$ENV_FILE" ] || die "Not installed."
+  mkdir -p "$BACKUP_DIR"; chmod 700 "$BACKUP_DIR"
+  local f="${BACKUP_DIR}/lat-$(date +%Y%m%d-%H%M%S).sql.gz"
+  umask 077
+  dc exec -T db pg_dump -U tracker -d asset_tracker --clean --if-exists | gzip > "$f"
+  [ -s "$f" ] || die "Backup is empty: something went wrong."
+  c_ok "Backup written: $f ($(du -h "$f" | cut -f1))"
+}
+
+cmd_restore() {
+  local f="${1:-}"; [ -f "$f" ] || die "Usage: ./latctl restore backups/lat-YYYYMMDD-HHMMSS.sql.gz"
+  c_warn "This replaces ALL current data with $f"
+  if [ "${LAT_YES:-}" != "1" ]; then read -r -p "Type 'restore' to continue: " a; [ "$a" = "restore" ] || die "Cancelled."; fi
+  cmd_backup >/dev/null && c_info "Safety backup of current data taken first."
+  gunzip -c "$f" | dc exec -T db psql -q -U tracker -d asset_tracker -v ON_ERROR_STOP=1 >/dev/null
+  dc restart app >/dev/null; wait_healthy; c_ok "Restored from $f"
+}
+
+cmd_update() {
+  [ -f "$ENV_FILE" ] || die "Not installed."
+  c_info "Taking a backup before updating…"; cmd_backup
+  sed -i "s/^LAT_VERSION=.*/LAT_VERSION=${VERSION}/" "$ENV_FILE"
+  dc up -d --build; wait_healthy; c_ok "Now on ${VERSION}"
+}
+
+cmd_uninstall() {
+  c_warn "This stops the app. Add --purge to ALSO delete all data."
+  if [ "${1:-}" = "--purge" ]; then
+    if [ "${LAT_YES:-}" != "1" ]; then read -r -p "Type 'delete' to wipe all data: " a; [ "$a" = "delete" ] || die "Cancelled."; fi
+    dc down -v --rmi local; rm -f "$ENV_FILE"; c_ok "Removed containers, image and data."
+  else
+    dc down; c_ok "Stopped. Data kept; './latctl start' brings it back."
+  fi
+}
+
+case "${1:-}" in
+  install)   cmd_install ;;
+  start)     dc up -d; wait_healthy; show_url ;;
+  stop)      dc stop; c_ok "Stopped." ;;
+  restart)   dc restart; wait_healthy ;;
+  status)    dc ps ;;
+  logs)      dc logs -f --tail 100 app ;;
+  backup)    cmd_backup ;;
+  restore)   shift; cmd_restore "${1:-}" ;;
+  update)    cmd_update ;;
+  uninstall) shift; cmd_uninstall "${1:-}" ;;
+  *) echo "Usage: ./latctl <install|start|stop|restart|status|logs|backup|restore FILE|update|uninstall [--purge]>"; exit 1 ;;
+esac

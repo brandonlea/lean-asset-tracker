@@ -1,0 +1,87 @@
+{# Server-agent section. Polls itself every 15 s; outerHTML swap keeps the id. #}
+{% set st = {"online": ("Online", "bg-emerald-500/15 text-emerald-300 ring-emerald-500/40", "bg-emerald-400"),
+             "offline": ("Offline", "bg-red-500/15 text-red-300 ring-red-500/40", "bg-red-400"),
+             "never": ("Waiting for first report", "bg-slate-700/50 text-slate-300 ring-slate-600", "bg-slate-500")}[agent_status] %}
+<section id="agent-section" class="mb-8"
+         {% if asset.agent_token_hash and not new_token %}hx-get="/assets/{{ asset.id }}/agent" hx-trigger="every 15s" hx-swap="outerHTML"{% endif %}>
+  <div class="flex justify-between items-center mb-4">
+    <h4 class="text-sm font-bold uppercase tracking-widest text-slate-500">Live status</h4>
+    {% if asset.agent_token_hash %}
+    <span class="flex items-center gap-2 text-[11px] font-bold uppercase px-2 py-1 rounded-md ring-1 {{ st[1] }}">
+      <span class="w-2 h-2 rounded-full {{ st[2] }} {{ 'animate-pulse' if agent_status == 'online' }}"></span>{{ st[0] }}</span>
+    {% endif %}
+  </div>
+
+  {% if new_token %}
+  <div class="p-4 rounded-xl bg-blue-500/10 ring-1 ring-blue-500/30 space-y-3 mb-4">
+    <p class="text-sm text-blue-200 font-semibold">Run this on the server (Linux, Python 3.8+). The token is shown <u>once</u>.</p>
+    <pre id="agent-install" class="text-[11px] leading-relaxed bg-slate-950 text-slate-200 p-3 rounded-lg overflow-x-auto whitespace-pre select-all">sudo curl -fsSL {{ base_url }}agent/lat-agent.py -o /usr/local/bin/lat-agent
+sudo chmod 755 /usr/local/bin/lat-agent
+printf 'LAT_URL={{ base_url }}\nLAT_TOKEN={{ new_token }}\n' | sudo install -m 600 /dev/stdin /etc/lat-agent.env
+sudo tee /etc/systemd/system/lat-agent.service >/dev/null &lt;&lt;'EOF'
+[Unit]
+Description=Lean Asset Tracker agent
+After=network-online.target
+Wants=network-online.target
+[Service]
+EnvironmentFile=/etc/lat-agent.env
+ExecStart=/usr/bin/python3 /usr/local/bin/lat-agent
+Restart=always
+RestartSec=10
+DynamicUser=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+[Install]
+WantedBy=multi-user.target
+EOF
+sudo systemctl daemon-reload &amp;&amp; sudo systemctl enable --now lat-agent</pre>
+    <button type="button" onclick="(()=>{const t=document.getElementById('agent-install').innerText,b=this,ok=()=>b.innerText='Copied ✓';
+      if(navigator.clipboard&&window.isSecureContext){navigator.clipboard.writeText(t).then(ok)}else{const a=document.createElement('textarea');a.value=t;document.body.appendChild(a);a.select();document.execCommand('copy');a.remove();ok()}})()"
+            class="w-full text-sm font-bold py-2.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white">Copy install commands</button>
+    <button type="button" hx-get="/assets/{{ asset.id }}/agent" hx-target="#agent-section" hx-swap="outerHTML"
+            class="w-full text-sm font-bold py-2.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-200">Done. Start watching</button>
+  </div>
+
+  {% elif not asset.agent_token_hash %}
+  <div class="p-4 rounded-xl bg-slate-800/50 ring-1 ring-slate-700/60">
+    <p class="text-sm text-slate-300">Install the lightweight agent to see this server's CPU, memory, disk and uptime live, and get an Offline warning if it stops reporting.</p>
+    <button type="button" hx-post="/assets/{{ asset.id }}/agent/token" hx-target="#agent-section" hx-swap="outerHTML"
+            class="mt-3 w-full text-sm font-bold py-2.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white">Connect this server</button>
+  </div>
+
+  {% elif agent_status == "never" %}
+  <p class="text-sm text-slate-400">No report yet. Check the agent with <code class="text-slate-300">systemctl status lat-agent</code> on the server.</p>
+
+  {% else %}
+  {% set cpu = m.cpu_percent %}{% set memp = pct(m.memory.used, m.memory.total) if m.memory else None %}{% set diskp = pct(m.disk.used, m.disk.total) if m.disk else None %}
+  <div class="grid grid-cols-3 gap-2 mb-3">
+    {% for label, val, sub in [("CPU", cpu, (m.cpu_count|string) ~ " cores"), ("Memory", memp, human_bytes(m.memory.used) ~ " / " ~ human_bytes(m.memory.total)), ("Disk", diskp, human_bytes(m.disk.used) ~ " / " ~ human_bytes(m.disk.total))] %}
+    <div class="p-3 rounded-xl bg-slate-800/60 ring-1 ring-slate-700/60">
+      <div class="text-[10px] font-bold uppercase tracking-wider text-slate-500">{{ label }}</div>
+      <div class="text-xl font-extrabold {{ 'text-red-300' if val and val >= 90 else ('text-amber-300' if val and val >= 75 else 'text-white') }}">{{ val|round|int if val is not none else '–' }}<span class="text-xs text-slate-400">%</span></div>
+      <div class="h-1.5 mt-1 rounded bg-slate-700 overflow-hidden"><div class="h-full {{ 'bg-red-400' if val and val >= 90 else ('bg-amber-400' if val and val >= 75 else 'bg-blue-500') }}" style="width: {{ val or 0 }}%"></div></div>
+      <div class="text-[10px] text-slate-500 mt-1 truncate">{{ sub }}</div>
+    </div>
+    {% endfor %}
+  </div>
+  <dl class="grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
+    <dt class="text-slate-500">Hostname</dt><dd class="text-slate-200 font-mono truncate">{{ m.hostname or '–' }}</dd>
+    <dt class="text-slate-500">OS</dt><dd class="text-slate-200 truncate">{{ m.os or '–' }}</dd>
+    <dt class="text-slate-500">Uptime</dt><dd class="text-slate-200">{{ human_uptime(m.uptime_s) }}</dd>
+    <dt class="text-slate-500">Load (1/5/15m)</dt><dd class="text-slate-200 font-mono">{{ m.load|join(' / ') if m.load else '–' }}</dd>
+    <dt class="text-slate-500">Last report</dt><dd class="{{ 'text-red-300 font-semibold' if agent_status == 'offline' else 'text-slate-200' }}">{{ agent_ago }}</dd>
+  </dl>
+  {% endif %}
+
+  {% if asset.agent_token_hash and not new_token %}
+  <div class="flex gap-2 mt-4">
+    <button type="button" hx-post="/assets/{{ asset.id }}/agent/token" hx-target="#agent-section" hx-swap="outerHTML"
+            hx-confirm="Create a new token? The current agent will stop working until you reinstall it."
+            class="flex-1 text-xs font-bold py-2 rounded-lg bg-slate-700/60 text-slate-300 ring-1 ring-slate-600 hover:bg-slate-700">New token</button>
+    <button type="button" hx-post="/assets/{{ asset.id }}/agent/revoke" hx-target="#agent-section" hx-swap="outerHTML"
+            hx-confirm="Disconnect this server's agent?"
+            class="flex-1 text-xs font-bold py-2 rounded-lg bg-red-600/15 text-red-300 ring-1 ring-red-500/30 hover:bg-red-600/25">Disconnect</button>
+  </div>
+  {% endif %}
+</section>

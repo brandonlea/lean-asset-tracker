@@ -1,0 +1,5 @@
+Hardware,Class,ID,Site
+Cisco Switch 2960,Network,CIS-001,Main Lab
+HP ProLiant DL380,Server,HP-992,Main Lab
+Dell Optiplex 7090,Workstation,DEL-441,Storage Room
+Fluke Tester,Tool,FLU-X,Main Lab

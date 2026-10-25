@@ -1,0 +1,87 @@
+{% from "_tz_select.html" import tz_select %}
+<div class="fixed inset-y-0 right-0 w-full max-w-lg bg-slate-900 border-l border-slate-800 shadow-2xl p-5 sm:p-8 z-50 overflow-y-auto animate-slide-in" data-asset-panel="{{ asset.id }}">
+    <div class="flex justify-between items-center mb-6">
+        <h2 class="text-2xl font-bold text-white">Asset Details</h2>
+        <button type="button" onclick="document.getElementById('detail-panel').innerHTML=''" aria-label="Close" class="p-2 -m-2 text-slate-500 hover:text-white transition">
+            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+        </button>
+    </div>
+
+    {% if flash %}<div role="status" class="mb-4 text-sm px-3 py-2 rounded-lg bg-emerald-500/10 text-emerald-300 ring-1 ring-emerald-500/30">{{ flash }}</div>{% endif %}
+    {% if error %}<div role="alert" class="mb-4 text-sm px-3 py-2 rounded-lg bg-red-500/10 text-red-300 ring-1 ring-red-500/40">{{ error }}</div>{% endif %}
+    {% if asset.archived_at %}
+    <div class="mb-6 p-4 rounded-xl bg-amber-500/10 ring-1 ring-amber-500/30 space-y-3" id="archived-banner">
+        <p class="text-sm text-amber-200"><b>Archived</b> {{ fmt_dt(asset.archived_at, tzinfo_user, '%d %b %Y') }}. Hidden from the list and exports.</p>
+        <button type="button" hx-post="/assets/{{ asset.id }}/restore" hx-target="#detail-panel"
+                class="w-full text-sm font-bold py-2.5 rounded-lg bg-amber-500/20 text-amber-100 ring-1 ring-amber-500/40 hover:bg-amber-500/30">Restore device</button>
+        <details class="text-sm">
+            <summary class="cursor-pointer text-red-300 font-semibold">Delete permanently…</summary>
+            <form hx-post="/assets/{{ asset.id }}/delete" hx-target="#detail-panel" class="mt-3 space-y-2">
+                <p class="text-xs text-slate-400">This removes the device, its history and maintenance windows. It can't be undone.
+                    Type <b class="text-slate-200 select-all">{{ asset.name }}</b> to confirm.</p>
+                <input class="field" name="confirm_name" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Type the device name to confirm">
+                <button type="submit" class="w-full text-sm font-bold py-2.5 rounded-lg bg-red-600 hover:bg-red-500 text-white">Delete forever</button>
+            </form>
+        </details>
+    </div>
+    {% endif %}
+    <div class="grid grid-cols-3 gap-2 mb-6" id="device-actions">
+        <button type="button" hx-get="/assets/{{ asset.id }}/edit" hx-target="#detail-panel"
+                class="py-2.5 rounded-lg text-sm font-semibold bg-slate-800 ring-1 ring-slate-700 hover:bg-slate-700 text-slate-200">✏️ Edit</button>
+        <a href="/labels?ids={{ asset.id }}" target="_blank" rel="noopener"
+           class="text-center py-2.5 rounded-lg text-sm font-semibold bg-slate-800 ring-1 ring-slate-700 hover:bg-slate-700 text-slate-200">🏷️ Label</a>
+        {% if not asset.archived_at %}
+        <button type="button" hx-post="/assets/{{ asset.id }}/archive" hx-target="#detail-panel"
+                hx-confirm="Archive {{ asset.name }}? It will be hidden from the list{{ ', its agent disconnected' if asset.agent_token_hash }} and upcoming maintenance cancelled. You can restore it later."
+                class="py-2.5 rounded-lg text-sm font-semibold bg-slate-800 ring-1 ring-slate-700 hover:bg-slate-700 text-slate-300">🗄️ Archive</button>
+        {% else %}<span></span>{% endif %}
+    </div>
+
+    <div class="mb-8">
+        <span class="text-xs font-bold tracking-widest text-blue-500 uppercase">System Identity · <span class="font-mono" data-code>{{ code }}</span></span>
+        <h3 class="text-2xl sm:text-3xl font-bold text-white mt-2 mb-1 break-words">{{ asset.name }}</h3>
+        <p class="text-slate-400 font-mono text-sm">Serial: {{ asset.serial_no or 'N/A' }}</p>
+        <p class="text-slate-400 text-sm mt-1">📍 {{ loc or 'No location' }}</p>
+        <div class="flex gap-2 mt-4">
+            <span class="bg-slate-800 text-slate-300 px-2 py-1 rounded text-xs font-medium">{{ asset.category }}</span>
+            <span class="bg-blue-900/30 text-blue-400 px-2 py-1 rounded text-xs font-medium">{{ asset.status }}</span>
+        </div>
+        {% set where = site_summary(asset.country, asset.region, asset.city, asset.site) %}
+        <details class="mt-4 rounded-lg bg-slate-800/40 ring-1 ring-slate-700/50" id="server-site">
+            <summary class="cursor-pointer list-none p-3 flex justify-between items-start gap-3 text-sm">
+                <span class="min-w-0 space-y-1">
+                    <span class="block" data-site-summary>{% if where %}<span class="mr-1">{{ flag(asset.country) or '🌍' }}</span><span class="text-slate-100 font-semibold break-words">{{ where }}</span>{% else %}<span class="text-slate-400">🌍 Site not set</span>{% endif %}</span>
+                    <span class="block text-slate-400">🕒 <b class="text-slate-100">{{ server_now.strftime('%H:%M %Z') }}</b> server time
+                        <span class="text-xs text-slate-500">· {{ server_tz }}{% if not server_tz_own %} (same as yours){% endif %}</span></span>
+                </span>
+                <span class="text-xs text-blue-400 font-semibold shrink-0">Edit</span>
+            </summary>
+            <form hx-post="/assets/{{ asset.id }}/site" hx-target="#detail-panel" class="px-3 pb-3 space-y-3">
+                {% with v={"country": asset.country, "region": asset.region, "city": asset.city, "site": asset.site, "timezone": asset.timezone}, wrap_id="tz-site" %}{% include "_site_fields.html" %}{% endwith %}
+                <button type="submit" class="w-full bg-blue-600 hover:bg-blue-500 text-white py-2.5 rounded-lg text-sm font-bold">Save site</button>
+            </form>
+        </details>
+        {% if asset.notes %}<p class="mt-4 text-sm text-slate-300 whitespace-pre-line bg-slate-800/40 rounded-lg p-3 ring-1 ring-slate-700/50">{{ asset.notes }}</p>{% endif %}
+    </div>
+
+    {% include "_agent.html" %}
+
+    {% include "_maintenance.html" %}
+
+    <div class="mb-8">
+        <h4 class="text-sm font-bold uppercase tracking-widest text-slate-500 mb-4">Provenance & History</h4>
+        <div class="space-y-3">
+            {% for log in logs %}
+            <div class="flex gap-4 p-3 rounded-lg bg-slate-800/50 border border-slate-700/50">
+                <div class="text-xs text-slate-500 whitespace-nowrap">{{ fmt_dt(log.timestamp, tzinfo_user) }}</div>
+                <div class="min-w-0">
+                    <div class="text-sm font-bold text-slate-200">{{ log.action.replace('_', ' ')|title }}</div>
+                    <div class="text-xs text-slate-400 break-words">{% if log.old_value %}{{ log.old_value }} &rarr; {% endif %}{{ log.new_value }}</div>
+                </div>
+            </div>
+            {% else %}
+            <p class="text-sm text-slate-500 italic">No history recorded for this asset.</p>
+            {% endfor %}
+        </div>
+    </div>
+</div>

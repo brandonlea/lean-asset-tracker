@@ -1,0 +1,28 @@
+{% from "_tz_select.html" import tz_select %}
+<div class="fixed inset-y-0 right-0 w-full max-w-lg bg-slate-900 border-l border-slate-800 shadow-2xl p-5 sm:p-8 z-50 overflow-y-auto animate-slide-in" id="settings-panel">
+  <div class="flex justify-between items-center mb-6">
+    <h2 class="text-2xl font-bold text-white">Settings</h2>
+    <button type="button" onclick="document.getElementById('detail-panel').innerHTML=''" aria-label="Close" class="p-2 -m-2 text-slate-500 hover:text-white">
+      <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+    </button>
+  </div>
+  <p class="text-sm text-slate-400 mb-6 break-all">{{ user_email }}</p>
+
+  <form hx-post="/settings" hx-target="#detail-panel" class="space-y-4 p-4 bg-slate-800/50 rounded-xl ring-1 ring-slate-700/60">
+    {% if error %}<div role="alert" class="text-sm px-3 py-2 rounded-lg bg-red-500/10 text-red-300 ring-1 ring-red-500/40">{{ error }}</div>{% endif %}
+    {% if flash %}<div role="status" class="text-sm px-3 py-2 rounded-lg bg-emerald-500/10 text-emerald-300 ring-1 ring-emerald-500/30">{{ flash }}</div>{% endif %}
+    <label class="block">
+      <span class="text-xs font-semibold text-slate-400">Your timezone</span>
+      {{ tz_select(tz_choices, user_tz, id="user-tz") }}
+    </label>
+    <p class="text-xs text-slate-500">Used for history, exports and the "your time" line on maintenance windows.
+      Each server can have its own timezone too: open the device and set it under <b>Server timezone</b>.</p>
+    <button type="button" id="detect-tz"
+            onclick="(()=>{const z=Intl.DateTimeFormat().resolvedOptions().timeZone,s=document.getElementById('user-tz');
+              if([...s.options].some(o=>o.value===z)){s.value=z;this.innerText='Detected: '+z}else{this.innerText='This device reports '+z+', pick it manually'}})()"
+            class="w-full text-sm font-semibold py-2.5 rounded-lg bg-slate-700/60 text-slate-200 ring-1 ring-slate-600 hover:bg-slate-700">Use this device's timezone</button>
+    <button type="submit" class="w-full bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white py-3 rounded-lg font-bold">Save</button>
+  </form>
+</div>
+{# keep the header label in sync after saving #}
+<span id="tz-label" hx-swap-oob="true">{{ user_tz.split('/')[-1].replace('_', ' ') }}</span>

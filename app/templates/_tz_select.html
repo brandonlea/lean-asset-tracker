@@ -1,0 +1,11 @@
+{# Grouped timezone <select>. blank_label adds an "inherit" option with value "". #}
+{% macro tz_select(choices, selected, blank_label=None, id=None) -%}
+<select class="field mt-1" name="timezone" {% if id %}id="{{ id }}"{% endif %}>
+  {% if blank_label %}<option value="" {{ 'selected' if not selected }}>{{ blank_label }}</option>{% endif %}
+  {% for group, opts in choices %}
+  <optgroup label="{{ group }}">
+    {% for value, text in opts %}<option value="{{ value }}" {{ 'selected' if value == selected }}>{{ text }}</option>{% endfor %}
+  </optgroup>
+  {% endfor %}
+</select>
+{%- endmacro %}

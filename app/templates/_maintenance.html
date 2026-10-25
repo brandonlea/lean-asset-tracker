@@ -1,0 +1,101 @@
+{# Swappable maintenance section. Every request that touches it returns this whole block (outerHTML), so the id always survives. #}
+{% set badge = {
+  "in_progress": ("Live now", "bg-blue-500/15 text-blue-300 ring-1 ring-blue-500/40"),
+  "overdue":     ("Overdue",  "bg-red-500/15 text-red-300 ring-1 ring-red-500/40"),
+  "upcoming":    ("Upcoming", "bg-amber-500/15 text-amber-300 ring-1 ring-amber-500/30"),
+  "completed":   ("Done",     "bg-emerald-500/15 text-emerald-300 ring-1 ring-emerald-500/30"),
+  "cancelled":   ("Cancelled","bg-slate-700/50 text-slate-400 ring-1 ring-slate-600"),
+} %}
+<section id="maintenance-section" class="mb-8">
+  <div class="flex justify-between items-center mb-4">
+    <h4 class="text-sm font-bold uppercase tracking-widest text-slate-500">Maintenance Windows</h4>
+    {% if not show_form %}
+    <button type="button" hx-get="/assets/{{ asset_id }}/maintenance/form" hx-target="#maintenance-section" hx-swap="outerHTML"
+            class="text-sm bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white px-3 py-2 rounded-lg font-semibold transition">+ Schedule</button>
+    {% endif %}
+  </div>
+
+  {% if flash %}<div class="mb-4 text-sm px-3 py-2 rounded-lg bg-emerald-500/10 text-emerald-300 ring-1 ring-emerald-500/30" role="status">{{ flash }}</div>{% endif %}
+
+  {% if show_form %}
+  <form hx-post="/assets/{{ asset_id }}/maintenance" hx-target="#maintenance-section" hx-swap="outerHTML"
+        class="p-4 mb-5 bg-slate-800/70 rounded-xl ring-1 ring-slate-700 space-y-4">
+    {% if error %}<div class="text-sm px-3 py-2 rounded-lg bg-red-500/10 text-red-300 ring-1 ring-red-500/40" role="alert">{{ error }}</div>{% endif %}
+
+    <label class="block">
+      <span class="text-xs font-semibold text-slate-400">What's being done?</span>
+      <input type="text" name="description" value="{{ form.description }}" placeholder="e.g. Firmware update, fan clean" required maxlength="200"
+             class="mt-1 w-full bg-slate-900 border border-slate-700 focus:border-blue-500 focus:outline-none text-white px-3 py-3 rounded-lg text-base">
+    </label>
+
+    <div>
+      <span class="text-xs font-semibold text-slate-400">Quick windows</span>
+      <div class="mt-1 flex flex-wrap gap-2">
+        {% for label, s, e in [("Overnight 02–05", "02:00", "05:00"), ("Late 22–00", "22:00", "00:00"), ("Lunch 12–13", "12:00", "13:00"), ("After hours 18–20", "18:00", "20:00")] %}
+        <button type="button" data-start="{{ s }}" data-end="{{ e }}"
+                onclick="const f=this.closest('form');f.start_time.value=this.dataset.start;f.end_time.value=this.dataset.end;"
+                class="text-xs px-3 py-2 rounded-full bg-slate-900 ring-1 ring-slate-700 text-slate-300 hover:ring-blue-500 active:bg-slate-700">{{ label }}</button>
+        {% endfor %}
+      </div>
+    </div>
+
+    <label class="block">
+      <span class="text-xs font-semibold text-slate-400">Date</span>
+      <input type="date" name="date" value="{{ form.date }}" required
+             class="mt-1 w-full bg-slate-900 border border-slate-700 focus:border-blue-500 focus:outline-none text-white px-3 py-3 rounded-lg text-base">
+    </label>
+    <div class="grid grid-cols-2 gap-3">
+      <label class="block">
+        <span class="text-xs font-semibold text-slate-400">Start</span>
+        <input type="time" name="start_time" value="{{ form.start }}" required step="300"
+               class="mt-1 w-full bg-slate-900 border border-slate-700 focus:border-blue-500 focus:outline-none text-white px-3 py-3 rounded-lg text-base">
+      </label>
+      <label class="block">
+        <span class="text-xs font-semibold text-slate-400">End</span>
+        <input type="time" name="end_time" value="{{ form.end }}" required step="300"
+               class="mt-1 w-full bg-slate-900 border border-slate-700 focus:border-blue-500 focus:outline-none text-white px-3 py-3 rounded-lg text-base">
+      </label>
+    </div>
+    <p class="text-xs text-slate-500">Times are the <b class="text-slate-300">server's local time</b>: {{ server_tz }}, now {{ server_now.strftime('%H:%M %Z') }}.
+      An end time earlier than the start runs past midnight.</p>
+
+    <div class="flex gap-2 pt-1">
+      <button type="submit" class="flex-1 bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white py-3 rounded-lg text-sm font-bold transition">Save window</button>
+      <button type="button" hx-get="/assets/{{ asset_id }}/maintenance" hx-target="#maintenance-section" hx-swap="outerHTML"
+              class="px-4 bg-slate-700 hover:bg-slate-600 text-slate-200 py-3 rounded-lg text-sm font-bold transition">Cancel</button>
+    </div>
+  </form>
+  {% endif %}
+
+  <div class="space-y-3">
+    {% for w in windows %}
+    {% set b = badge[w.state] %}
+    <article class="p-4 rounded-xl bg-slate-800/50 ring-1 ring-slate-700/60 {{ 'opacity-60' if w.state in ('completed','cancelled') }}" data-window-id="{{ w.id }}">
+      <div class="flex justify-between items-start gap-3">
+        <div class="min-w-0">
+          <div class="text-sm font-bold text-slate-100 break-words">{{ w.description }}</div>
+          <div class="mt-1 text-sm text-slate-300 font-medium">
+            {{ w.start.strftime('%a %d %b') }} · {{ w.start.strftime('%H:%M') }}–{{ w.end.strftime('%H:%M') }} <span class="text-slate-400">{{ w.end.strftime('%Z') }}</span>{% if w.crosses_midnight %} <span class="text-slate-500">(+1 day)</span>{% endif %}
+          </div>
+          {% if w.user_start %}
+          <div class="text-xs text-blue-300/80 mt-0.5" data-your-time>Your time: {{ w.user_start.strftime('%a %H:%M') }}–{{ w.user_end.strftime('%H:%M') }} {{ w.user_end.strftime('%Z') }}{% if w.user_start.date() != w.user_end.date() %} (+1 day){% endif %}</div>
+          {% endif %}
+          <div class="text-xs text-slate-500 mt-0.5">{{ w.duration }} downtime</div>
+        </div>
+        <span class="shrink-0 text-[11px] font-bold uppercase px-2 py-1 rounded-md {{ b[1] }}">{{ b[0] }}</span>
+      </div>
+      {% if w.state in ('upcoming','in_progress','overdue') %}
+      <div class="flex gap-2 mt-3">
+        <button type="button" hx-post="/maintenance/{{ w.id }}/complete" hx-target="#maintenance-section" hx-swap="outerHTML"
+                class="flex-1 text-xs font-bold py-2 rounded-lg bg-emerald-600/20 text-emerald-300 ring-1 ring-emerald-500/30 hover:bg-emerald-600/30">Mark done</button>
+        <button type="button" hx-post="/maintenance/{{ w.id }}/cancel" hx-target="#maintenance-section" hx-swap="outerHTML"
+                hx-confirm="Cancel this maintenance window?"
+                class="flex-1 text-xs font-bold py-2 rounded-lg bg-slate-700/60 text-slate-300 ring-1 ring-slate-600 hover:bg-slate-700">Cancel</button>
+      </div>
+      {% endif %}
+    </article>
+    {% else %}
+    <p class="text-sm text-slate-500 italic">No maintenance windows scheduled.</p>
+    {% endfor %}
+  </div>
+</section>

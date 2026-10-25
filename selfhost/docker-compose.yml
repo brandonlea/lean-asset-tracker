@@ -1,0 +1,43 @@
+# Lean Asset Tracker: self-hosted edition.
+# All settings come from .env (created by `./latctl install`). Don't put secrets in this file.
+name: ${LAT_PROJECT:-lean-asset-tracker}
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: tracker
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?run ./latctl install first}
+      POSTGRES_DB: asset_tracker
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    # No published port: the database is only reachable by the app container.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tracker -d asset_tracker"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  app:
+    build: .
+    image: lean-asset-tracker:${LAT_VERSION:-latest}
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://tracker:${POSTGRES_PASSWORD}@db:5432/asset_tracker
+      TZ: ${TZ:-Europe/London}
+      LAT_SETUP_TOKEN: ${LAT_SETUP_TOKEN:-}
+    ports:
+      - "${LAT_BIND:-0.0.0.0}:${LAT_PORT:-8080}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health',timeout=3).status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+
+volumes:
+  db-data:

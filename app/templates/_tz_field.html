@@ -1,0 +1,8 @@
+{# Timezone picker that GET /geo/zones re-renders when the country changes. #}
+{% from "_tz_select.html" import tz_select %}
+{% set wid = wrap_id or (request.query_params.get('wrap') if request.query_params.get('wrap') in ('tz-new', 'tz-site') else 'tz-new') %}
+<div class="tz-wrap" id="{{ wid }}">
+  {{ tz_select(tz_choices, selected, blank_label="Same as mine (" ~ user_tz ~ ")", id=wid ~ "-select") }}
+  {% if hint %}<span class="text-xs text-emerald-300/90" data-tz-hint>{{ hint }}</span>
+  {% else %}<span class="text-xs text-slate-500">Maintenance windows use this server's clock.</span>{% endif %}
+</div>

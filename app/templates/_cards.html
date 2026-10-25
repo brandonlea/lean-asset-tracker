@@ -1,0 +1,28 @@
+{% set dot = {"online": ("bg-emerald-400", "Online"), "offline": ("bg-red-400", "Offline"), "never": ("bg-slate-500", "Agent not reporting")} %}
+{% for c in cards %}
+<div class="glass-card p-5 sm:p-6 rounded-xl hover:border-blue-500/50 transition-all cursor-pointer group" data-asset-id="{{ c.a.id }}"
+     hx-get="/assets/{{ c.a.id }}/details" hx-target="#detail-panel">
+  <div class="flex justify-between items-start mb-5 gap-2">
+    <div class="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-blue-400 bg-blue-900/30 px-2 py-1 rounded truncate">{{ c.a.category }}</div>
+    <div class="flex items-center gap-2 shrink-0">
+      {% if c.agent %}<span class="flex items-center gap-1.5 text-[11px] text-slate-400" title="{{ dot[c.agent][1] }}"><span class="w-2 h-2 rounded-full {{ dot[c.agent][0] }} {{ 'animate-pulse' if c.agent == 'online' }}"></span>{{ dot[c.agent][1] if c.agent != 'never' else 'Waiting' }}</span>{% endif %}
+      {% if c.a.archived_at %}<span class="text-[10px] font-bold uppercase px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300">Archived</span>{% endif %}
+      <span class="text-[10px] font-medium text-slate-500 uppercase">{{ c.a.status }}</span>
+    </div>
+  </div>
+  <h3 class="text-lg sm:text-xl font-bold text-white group-hover:text-blue-400 transition-colors mb-1 break-words">{{ c.a.name }}</h3>
+  <p class="text-slate-400 text-xs font-mono mb-5">SN: {{ c.a.serial_no or 'N/A' }}</p>
+  <div class="flex items-center gap-2 text-sm text-slate-400 font-medium">
+    <svg class="w-4 h-4 text-slate-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
+    <span class="truncate">{{ c.loc }}</span>
+  </div>
+  {% if c.place %}<div class="mt-1.5 text-sm text-slate-400 truncate" data-card-place>{{ c.place }}</div>{% endif %}
+</div>
+{% else %}
+<div class="col-span-full flex flex-col items-center justify-center py-20 text-slate-500 border-2 border-dashed border-slate-800 rounded-2xl text-center px-6">
+  {% if archived and not q %}<p class="text-lg font-medium">No archived devices</p>
+  {% elif q %}<p class="text-lg font-medium">Nothing matches "{{ q }}"</p>
+  {% else %}<p class="text-lg font-medium">No devices yet</p>
+  <p class="text-sm mt-1">Tap <b>+ Add Asset</b> or <b>Import CSV</b> to get started.</p>{% endif %}
+</div>
+{% endfor %}

@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    {% include "_head.html" %}
+    <title>Lean Asset Tracker</title>
+    <style>
+        .search-input { background: rgba(15,23,42,.8); border: 1px solid #334155; transition: all .2s ease; touch-action: manipulation; }
+        .search-input:focus { border-color: #3b82f6; box-shadow: 0 0 0 2px rgba(59,130,246,.2); }
+    </style>
+</head>
+<body class="antialiased">
+    {% if demo_mode %}
+    <div class="bg-amber-400 text-black text-xs sm:text-sm font-semibold text-center px-3 py-2" id="demo-banner">
+        Live demo with sample data. {{ demo_note }} Live server stats are simulated.
+        <a href="https://hallveckdigital.co.uk/self-host" class="underline font-bold whitespace-nowrap">Get your own free →</a>
+    </div>
+    <div id="demo-toast"></div>
+    {% endif %}
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 py-6 sm:py-10">
+        <div class="flex justify-end items-center gap-3 text-xs text-slate-500 mb-4">
+            <span class="truncate max-w-[45%]">{{ user_email }}</span>
+            <button type="button" hx-get="/settings" hx-target="#detail-panel" aria-label="Settings and timezone"
+                    class="px-3 py-1.5 rounded-md ring-1 ring-slate-700 hover:bg-slate-800 text-slate-300 font-semibold whitespace-nowrap">🕒 <span id="tz-label">{{ user_tz.split('/')[-1].replace('_', ' ') }}</span></button>
+            {% if not demo_mode %}<form method="post" action="/logout"><button class="px-3 py-1.5 rounded-md ring-1 ring-slate-700 hover:bg-slate-800 text-slate-300 font-semibold">Sign out</button></form>{% endif %}
+        </div>
+
+        <header class="flex flex-col sm:flex-row justify-between items-start sm:items-end gap-6 mb-8">
+            <div>
+                <div class="flex items-center gap-2 mb-2">
+                    <div class="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center shadow-lg shadow-blue-500/20">
+                        <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4-8-4m16 0l-8 8-8-8"></path></svg>
+                    </div>
+                    <span class="text-xs font-bold tracking-widest text-blue-500 uppercase">Infrastructure Management</span>
+                </div>
+                <h1 class="text-3xl sm:text-4xl font-extrabold text-white tracking-tight">Lean Asset Tracker</h1>
+                <p class="text-slate-400 mt-1 font-medium">UK Professional Edition · v{{ version }}</p>
+            </div>
+            <div class="grid grid-cols-2 sm:flex gap-2 sm:gap-3 w-full sm:w-auto">
+                <button type="button" onclick="document.getElementById('csv-file-input').click()" class="bg-slate-800 hover:bg-slate-700 text-slate-200 px-3 sm:px-4 py-2.5 rounded-md text-sm font-semibold border border-slate-700">Import CSV</button>
+                <a href="/export/csv" download class="text-center bg-slate-800 hover:bg-slate-700 text-slate-200 px-3 sm:px-4 py-2.5 rounded-md text-sm font-semibold border border-slate-700">Export CSV</a>
+                <a href="/labels" class="text-center bg-slate-800 hover:bg-slate-700 text-slate-200 px-3 sm:px-4 py-2.5 rounded-md text-sm font-semibold border border-slate-700">🏷️ Labels</a>
+                <button type="button" id="add-asset-btn" hx-get="/assets/new" hx-target="#detail-panel" class="bg-blue-600 hover:bg-blue-500 text-white px-3 sm:px-4 py-2.5 rounded-md text-sm font-semibold shadow-lg shadow-blue-600/20">+ Add Asset</button>
+            </div>
+        </header>
+
+        {% if imported is not none %}
+        <div role="status" class="mb-6 text-sm px-4 py-3 rounded-lg bg-emerald-500/10 text-emerald-300 ring-1 ring-emerald-500/30">
+            Imported {{ imported }} device{{ '' if imported == 1 else 's' }}{% if skipped %}, skipped {{ skipped }} (blank name or duplicate serial){% endif %}.
+        </div>
+        {% endif %}
+        {% if import_error %}
+        <div role="alert" class="mb-6 text-sm px-4 py-3 rounded-lg bg-red-500/10 text-red-300 ring-1 ring-red-500/40">Import failed: {{ import_error }}</div>
+        {% endif %}
+
+        <div class="mb-8 relative z-20">
+            <div class="relative max-w-3xl">
+                <div class="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
+                    <svg class="h-5 w-5 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
+                </div>
+                <input type="search" name="q" placeholder="Search devices, serials, locations…" autocomplete="off"
+                       class="search-input w-full pl-11 pr-11 py-4 rounded-xl text-white text-base focus:outline-none"
+                       hx-get="/search" hx-trigger="input changed delay:200ms, search" hx-target="#asset-list" hx-indicator="#loader"
+                       hx-include="[name=archived]">
+                <div id="loader" class="htmx-indicator absolute right-4 top-4 text-blue-500" style="pointer-events:none">
+                    <svg class="animate-spin h-5 w-5" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+                </div>
+            </div>
+            <label class="mt-3 inline-flex items-center gap-2 text-sm text-slate-400 select-none" id="archived-toggle">
+                <input type="checkbox" name="archived" value="1" class="w-4 h-4 accent-amber-500"
+                       hx-get="/search" hx-trigger="change" hx-target="#asset-list" hx-include="[name=q]">
+                Show archived{% if archived_count %} ({{ archived_count }}){% endif %}
+            </label>
+        </div>
+
+        <!-- Loads on page open, refreshes after adds and every 30 s (agent online dots) -->
+        <div id="asset-list" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6"
+             hx-get="/search" hx-trigger="load, assetsChanged from:body, every 30s" hx-include="[name=q],[name=archived]">
+            <div class="col-span-full py-20 text-center text-slate-500">Loading…</div>
+        </div>
+    </div>
+
+    <!-- Empty, unsized mount point; the panel content itself is position:fixed. -->
+    <div id="detail-panel"></div>
+    {% if open_asset %}
+    <!-- Opened from a QR label (/a/{{ open_asset }}): show that device straight away -->
+    <script>document.addEventListener('DOMContentLoaded',()=>htmx.ajax('GET','/assets/{{ open_asset|int }}/details','#detail-panel'));</script>
+    {% endif %}
+
+    <form id="csv-import-form" action="/import/csv" method="POST" enctype="multipart/form-data" class="hidden">
+        <input type="file" id="csv-file-input" name="file" accept=".csv,text/csv" onchange="this.form.submit()">
+    </form>
+</body>
+</html>

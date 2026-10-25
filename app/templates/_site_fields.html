@@ -1,0 +1,18 @@
+{# Country / region / city / datacentre + timezone. Expects: countries, tz_choices, user_tz, v (values), wrap_id #}
+<label class="block"><span class="text-xs font-semibold text-slate-400">Country</span>
+  <select class="field mt-1" name="country"
+          hx-get="/geo/zones" hx-trigger="change" hx-target="#{{ wrap_id }}" hx-swap="outerHTML"
+          hx-include="#{{ wrap_id }}-select" hx-vals='{"wrap": "{{ wrap_id }}"}'>
+    <option value="">Not set</option>
+    {% for code, cname in countries.items() %}<option value="{{ code }}" {{ 'selected' if v.country == code }}>{{ flag(code) }} {{ cname }}</option>{% endfor %}
+  </select></label>
+<div class="grid grid-cols-2 gap-3">
+  <label class="block"><span class="text-xs font-semibold text-slate-400">Region / state</span>
+    <input class="field mt-1" name="region" value="{{ v.region or '' }}" maxlength="120" placeholder="e.g. England, Texas"></label>
+  <label class="block"><span class="text-xs font-semibold text-slate-400">City</span>
+    <input class="field mt-1" name="city" value="{{ v.city or '' }}" maxlength="120" placeholder="e.g. Manchester"></label>
+</div>
+<label class="block"><span class="text-xs font-semibold text-slate-400">Datacentre / provider</span>
+  <input class="field mt-1" name="site" value="{{ v.site or '' }}" maxlength="120" placeholder="e.g. Hetzner FSN1, Equinix LD5, Home loft"></label>
+<div class="block"><span class="text-xs font-semibold text-slate-400">Server timezone</span>
+  {% with wrap_id=wrap_id, selected=v.timezone, hint="" %}{% include "_tz_field.html" %}{% endwith %}</div>

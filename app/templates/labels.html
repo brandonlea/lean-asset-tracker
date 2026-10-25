@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  {% include "_head.html" %}
+  <title>Labels | Lean Asset Tracker</title>
+  <style>
+    @page { size: A4; margin: 0; }
+    .sheet { width: 210mm; height: 297mm; box-sizing: border-box; background: #fff; color: #000;
+             padding: {{ sheet.top_mm }}mm 0 0 {{ sheet.left_mm }}mm; display: grid;
+             grid-template-columns: repeat({{ sheet.cols }}, {{ sheet.w_mm }}mm); grid-auto-rows: {{ sheet.h_mm }}mm;
+             column-gap: {{ sheet.gap_x_mm }}mm; row-gap: {{ sheet.gap_y_mm }}mm; font-family: Inter, Arial, sans-serif; }
+    .lbl { box-sizing: border-box; overflow: hidden; display: flex; align-items: center;
+           gap: {{ '1.2mm' if sheet.key == 'small' else '2.5mm' }}; padding: {{ '1mm 1.5mm' if sheet.key == 'small' else '2.5mm 3mm' }}; }
+    .qr { flex: none; height: {{ (sheet.h_mm - (2 if sheet.key == 'small' else 5))|round(1) }}mm; aspect-ratio: 1; }
+    .qr svg { width: 100%; height: 100%; display: block; }
+    .txt { min-width: 0; line-height: 1.15; }
+    .nm { font-weight: 800; font-size: {{ '6.5pt' if sheet.key == 'small' else '10pt' }}; display: -webkit-box; -webkit-line-clamp: 2;
+          -webkit-box-orient: vertical; overflow: hidden; word-break: break-word; }
+    .cd { font-family: ui-monospace, Menlo, monospace; font-size: {{ '6pt' if sheet.key == 'small' else '8pt' }}; margin-top: .6mm; }
+    .meta { font-size: 7pt; color: #333; margin-top: .6mm; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .preview { overflow: hidden; }
+    .preview .sheet { box-shadow: 0 10px 30px rgba(0,0,0,.5); margin: 0 auto 24px; transform-origin: top left; }
+    .preview .lbl { outline: 1px dashed #cbd5e1; }
+    @media print {
+      body { background: #fff !important; }
+      .no-print { display: none !important; }
+      .preview { overflow: visible; }
+      .preview .sheet { box-shadow: none; margin: 0; transform: none !important; break-after: page; }
+      .preview .lbl { outline: none; }
+      .preview-box { height: auto !important; }
+    }
+  </style>
+</head>
+<body class="antialiased">
+  <div class="no-print max-w-3xl mx-auto px-4 py-6 space-y-5">
+    <div class="flex items-center justify-between gap-3">
+      <a href="/" class="text-sm text-slate-400 hover:text-white">&larr; Back to devices</a>
+      <span class="text-xs text-slate-500 truncate">QR links to {{ base }}</span>
+    </div>
+    <h1 class="text-2xl font-extrabold">Print QR labels</h1>
+    <p class="text-sm text-slate-400">Scan a label with your phone camera to open that device. Works on any phone on your network or Tailscale.</p>
+
+    <form method="get" action="/labels" class="glass-card rounded-xl p-4 space-y-4" id="label-form">
+      <label class="block"><span class="text-xs font-semibold text-slate-400">Sticker sheet (A4)</span>
+        <select name="size" class="field mt-1">{% for k, s in sheets.items() %}<option value="{{ k }}" {{ 'selected' if s.key == sheet.key }}>{{ s.label }}</option>{% endfor %}</select></label>
+      <div>
+        <div class="flex items-center justify-between mb-2">
+          <span class="text-xs font-semibold text-slate-400">Devices</span>
+          <span class="flex gap-3 text-xs font-semibold">
+            <button type="button" class="text-blue-400" onclick="document.querySelectorAll('#label-form [name=ids]').forEach(c=>c.checked=true)">Select all</button>
+            <button type="button" class="text-slate-400" onclick="document.querySelectorAll('#label-form [name=ids]').forEach(c=>c.checked=false)">None</button>
+          </span>
+        </div>
+        <div class="max-h-72 overflow-y-auto rounded-lg ring-1 ring-slate-700 divide-y divide-slate-800">
+          {% for a in all_assets %}
+          <label class="flex items-center gap-3 px-3 py-3 hover:bg-slate-800/60">
+            <input type="checkbox" name="ids" value="{{ a.id }}" class="w-5 h-5 accent-blue-500 shrink-0" {{ 'checked' if a.id in selected }}>
+            <span class="min-w-0"><span class="block text-sm font-semibold truncate">{{ a.name }}</span>
+              <span class="block text-xs text-slate-500 truncate">{{ device_code(a.id) }}{% if a.serial_no %} · {{ a.serial_no }}{% endif %}{% if loc(a.location) %} · {{ loc(a.location) }}{% endif %}</span></span>
+          </label>
+          {% else %}<p class="px-3 py-4 text-sm text-slate-500">No devices yet.</p>{% endfor %}
+        </div>
+      </div>
+      <button class="w-full bg-blue-600 hover:bg-blue-500 text-white py-3 rounded-lg font-bold">Preview labels</button>
+    </form>
+
+    {% if count %}
+    <div class="flex gap-2 items-center">
+      <button type="button" onclick="window.print()" class="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white py-3 rounded-lg font-bold">🖨️ Print {{ count }} label{{ '' if count == 1 else 's' }}</button>
+    </div>
+    <p class="text-xs text-slate-500">In the print dialog choose <b>A4</b>, scale <b>100% / Actual size</b>, margins <b>None</b>, so labels line up with the stickers. Try one sheet on plain paper first.</p>
+    {% endif %}
+  </div>
+
+  {% if count %}
+  <div class="preview px-4 preview-box" id="preview">
+    {% for page in pages %}
+    <div class="sheet" data-sheet>
+      {% for it in page %}
+      <div class="lbl" data-label="{{ it.a.id }}">
+        <div class="qr">{{ it.qr|safe }}</div>
+        <div class="txt">
+          <div class="nm">{{ it.a.name }}</div>
+          <div class="cd">{{ it.code }}</div>
+          {% if sheet.key != 'small' %}
+            {% if it.a.serial_no %}<div class="meta">SN {{ it.a.serial_no }}</div>{% endif %}
+            {% if it.where %}<div class="meta">{{ it.where }}</div>{% endif %}
+          {% endif %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    {% endfor %}
+  </div>
+  <script>
+    // Scale the A4 preview to the screen width (phones); printing ignores this.
+    function fit(){const box=document.getElementById('preview');document.querySelectorAll('[data-sheet]').forEach(s=>{
+      const cs=getComputedStyle(box),inner=box.clientWidth-parseFloat(cs.paddingLeft)-parseFloat(cs.paddingRight);
+      const k=Math.min(1,inner/s.offsetWidth);s.style.transform='scale('+k+')';s.style.marginBottom=(24-(1-k)*s.offsetHeight)+'px';});}
+    addEventListener('load',fit);addEventListener('resize',fit);
+  </script>
+  {% endif %}
+</body>
+</html>

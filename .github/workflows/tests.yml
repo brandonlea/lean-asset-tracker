@@ -1,0 +1,34 @@
+name: tests
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt pytest zxing-cpp pillow
+      - run: python -m pytest -q
+        env:
+          DATABASE_URL: postgresql://unused:unused@127.0.0.1/unused   # unit tests don't touch the DB
+      - name: Templates parse
+        run: |
+          python - <<'EOF'
+          import os
+          from jinja2 import Environment, FileSystemLoader
+          e = Environment(loader=FileSystemLoader("app/templates"))
+          [e.get_template(t) for t in os.listdir("app/templates") if t.endswith(".html")]
+          print("templates OK")
+          EOF
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t lat:ci .
