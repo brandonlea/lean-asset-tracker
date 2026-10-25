@@ -17,5 +17,5 @@ printf '%s\n' '.env' 'backups/' '**/__pycache__' '**/*.bak*' > "$STAGE/.dockerig
 
 OUT="dist/lean-asset-tracker-${VERSION}.tar.gz"
 tar -C "$(dirname "$STAGE")" -czf "$OUT" lean-asset-tracker
-sha256sum "$OUT" | tee "$OUT.sha256"
+(cd dist && sha256sum "$(basename "$OUT")") | tee "$OUT.sha256"
 tar -tzf "$OUT"
