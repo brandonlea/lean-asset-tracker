@@ -1,5 +1,5 @@
 
-from sqlalchemy import Boolean, Column, String, Integer, ForeignKey, DateTime, JSON, Text
+from sqlalchemy import Boolean, Column, String, Integer, ForeignKey, DateTime, Date, JSON, Text
 from sqlalchemy.orm import declarative_base, relationship
 from sqlalchemy.sql import func
 from pgvector.sqlalchemy import Vector
@@ -35,6 +35,10 @@ class Asset(Base):
     site = Column(String(120), nullable=True)     # datacentre / provider / building
     archived_at = Column(DateTime(timezone=True), nullable=True, index=True)  # hidden, restorable
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    # Lifecycle dates drive the warranty / end-of-life alerts (app/alerts.py).
+    warranty_expires = Column(Date, nullable=True, index=True)
+    eol_date = Column(Date, nullable=True, index=True)
+    alerts_muted = Column(Boolean, nullable=False, server_default="false")
     # Server agent (heartbeat). Only a SHA-256 of the token is stored.
     agent_token_hash = Column(String(64), unique=True, index=True, nullable=True)
     agent_last_seen = Column(DateTime(timezone=True), nullable=True)
@@ -108,3 +112,33 @@ class Invite(Base):
     accepted_at = Column(DateTime(timezone=True), nullable=True)
     invited_by_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     invited_by = relationship("User")
+
+
+class AlertChannel(Base):
+    """Where alerts get delivered. A webhook, because a self-hosted install
+    has no mail server (same reasoning as invite links)."""
+    __tablename__ = "alert_channels"
+    id = Column(Integer, primary_key=True)
+    name = Column(String(80), nullable=False)
+    url = Column(Text, nullable=False)
+    kind = Column(String(16), nullable=False, default="generic")  # discord/slack/ntfy/generic
+    enabled = Column(Boolean, nullable=False, server_default="true")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    last_ok_at = Column(DateTime(timezone=True), nullable=True)
+    last_error = Column(Text, nullable=True)
+
+
+class AlertSent(Base):
+    """One row per alert key, holding when it last went out.
+
+    This table is the whole anti-spam mechanism: app/alerts.py decides what is
+    true, this decides whether we have already said it recently.
+    """
+    __tablename__ = "alerts_sent"
+    key = Column(String(120), primary_key=True)
+    severity = Column(String(16), nullable=False)
+    asset_id = Column(Integer, ForeignKey("assets.id", ondelete="CASCADE"), nullable=True)
+    title = Column(Text, nullable=False)
+    first_seen_at = Column(DateTime(timezone=True), server_default=func.now())
+    last_sent_at = Column(DateTime(timezone=True), nullable=True)
+    resolved_at = Column(DateTime(timezone=True), nullable=True)

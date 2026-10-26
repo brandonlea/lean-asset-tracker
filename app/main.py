@@ -67,6 +67,10 @@ def startup():
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE",
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS name VARCHAR(80)",
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ",
+            # v0.7.0 alerts
+            "ALTER TABLE assets ADD COLUMN IF NOT EXISTS warranty_expires DATE",
+            "ALTER TABLE assets ADD COLUMN IF NOT EXISTS eol_date DATE",
+            "ALTER TABLE assets ADD COLUMN IF NOT EXISTS alerts_muted BOOLEAN NOT NULL DEFAULT FALSE",
             "CREATE UNIQUE INDEX IF NOT EXISTS ix_assets_agent_token_hash ON assets (agent_token_hash)",
         ):
             conn.execute(text(stmt))
