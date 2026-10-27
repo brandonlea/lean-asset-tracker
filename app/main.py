@@ -33,6 +33,50 @@ VERSION = "0.6.0"
 APP_DIR = Path(__file__).parent
 
 app = FastAPI(title="Lean Asset Tracker", version=VERSION)
+
+
+# ---------------------------------------------------------------- security headers
+# Set on every response so that each self-hosted install gets them without the
+# operator having to configure a reverse proxy correctly.
+#
+# Honest note on the CSP: 'unsafe-inline' is in script-src because the
+# templates still use inline onclick/onchange handlers, and the CDN hosts are
+# listed because the UI currently loads Tailwind, htmx and Google Fonts from
+# them. Both of those should go away (vendor the assets, move the handlers into
+# a JS file) and then this policy can be tightened to script-src 'self'. Until
+# then this header is documentation of reality, not a strong guarantee --
+# writing a stricter policy than the app obeys would just break the UI for
+# every user while providing no protection.
+CSP = (
+    "default-src 'self'; "
+    "script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com https://unpkg.com; "
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+    "font-src 'self' https://fonts.gstatic.com data:; "
+    "img-src 'self' data:; "
+    "connect-src 'self'; "
+    "frame-ancestors 'none'; "      # real clickjacking protection, no caveat
+    "base-uri 'self'; "
+    "form-action 'self'"
+)
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    resp = await call_next(request)
+    resp.headers.setdefault("Content-Security-Policy", CSP)
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    resp.headers["X-Frame-Options"] = "DENY"          # for older browsers
+    resp.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    resp.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=(), interest-cohort=()"
+    # An asset register is never something you want cached by a shared proxy
+    # or left in a browser's back-button cache after logout.
+    if not request.url.path.startswith(("/static/", "/agent/")):
+        resp.headers["Cache-Control"] = "no-store"
+    if request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https":
+        resp.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    return resp
+
+
 templates = Jinja2Templates(directory=str(APP_DIR / "templates"))
 templates.env.globals.update(human_bytes=ag.human_bytes, human_uptime=ag.human_uptime, pct=ag.pct,
                              fmt_dt=tzs.fmt, tz_label=tzs.label, flag=geo.flag, country_name=geo.name,
@@ -210,7 +254,7 @@ def _set_session_cookie(resp: Response, request: Request, token: str):
 def setup_page(request: Request, token: str = "", db: Session = Depends(get_db)):
     if db.query(User).count():
         return RedirectResponse("/login", status_code=303)
-    return templates.TemplateResponse("setup.html", {"request": request, "token": token})
+    return templates.TemplateResponse(request, "setup.html", {"request": request, "token": token})
 
 
 @app.post("/setup", response_class=HTMLResponse)
@@ -221,14 +265,14 @@ def setup_submit(request: Request, token: str = Form(""), email: str = Form(...)
     ctx = {"request": request, "token": token, "email": email}
     import hmac
     if not hmac.compare_digest(token, auth.SETUP_TOKEN):
-        return templates.TemplateResponse("setup.html", {**ctx, "error": "Setup link is invalid. Use the link from the install output or `docker logs`."}, status_code=403)
+        return templates.TemplateResponse(request, "setup.html", {**ctx, "error": "Setup link is invalid. Use the link from the install output or `docker logs`."}, status_code=403)
     email = email.strip().lower()
     if "@" not in email or len(email) > 254:
-        return templates.TemplateResponse("setup.html", {**ctx, "error": "Enter a valid email."}, status_code=400)
+        return templates.TemplateResponse(request, "setup.html", {**ctx, "error": "Enter a valid email."}, status_code=400)
     if password != confirm:
-        return templates.TemplateResponse("setup.html", {**ctx, "error": "Passwords don't match."}, status_code=400)
+        return templates.TemplateResponse(request, "setup.html", {**ctx, "error": "Passwords don't match."}, status_code=400)
     if problem := auth.password_problem(password):
-        return templates.TemplateResponse("setup.html", {**ctx, "error": problem}, status_code=400)
+        return templates.TemplateResponse(request, "setup.html", {**ctx, "error": problem}, status_code=400)
     user = User(email=email, password_hash=auth.hash_password(password), is_admin=True,
                 timezone=tzs.valid_tz(timezone_name) or tzs.DEFAULT_TZ)
     db.add(user)
@@ -242,7 +286,7 @@ def setup_submit(request: Request, token: str = Form(""), email: str = Form(...)
 def login_page(request: Request, next: str = "", db: Session = Depends(get_db)):
     if db.query(User).count() == 0:
         return RedirectResponse("/setup", status_code=303)
-    return templates.TemplateResponse("login.html", {"request": request, "next": dv.safe_next(next)})
+    return templates.TemplateResponse(request, "login.html", {"request": request, "next": dv.safe_next(next)})
 
 
 @app.post("/login", response_class=HTMLResponse)
@@ -251,12 +295,12 @@ def login_submit(request: Request, email: str = Form(...), password: str = Form(
     ip = _client_ip(request)
     next = dv.safe_next(next)
     if wait := auth.throttle.blocked(ip):
-        return templates.TemplateResponse("login.html", {"request": request, "email": email, "next": next,
+        return templates.TemplateResponse(request, "login.html", {"request": request, "email": email, "next": next,
                                           "error": f"Too many attempts. Try again in {wait // 60 + 1} min."}, status_code=429)
     user = auth.authenticate(db, email, password)
     if not user:
         auth.throttle.fail(ip)
-        return templates.TemplateResponse("login.html", {"request": request, "email": email, "next": next,
+        return templates.TemplateResponse(request, "login.html", {"request": request, "email": email, "next": next,
                                           "error": "Email or password is wrong."}, status_code=401)
     auth.throttle.reset(ip)
     user.last_login_at = datetime.now(timezone.utc)
@@ -276,7 +320,7 @@ def logout(request: Request, db: Session = Depends(get_db)):
 
 # ---------------------------------------------------------------- account settings
 def _settings_panel(request: Request, **extra):
-    return templates.TemplateResponse("_settings.html", {
+    return templates.TemplateResponse(request, "_settings.html", {
         "request": request, "user_tz": user_tz_name(request), "tz_choices": tzs.choices(),
         "user_email": getattr(request.state, "user_email", ""),
         "is_admin": getattr(request.state, "user_is_admin", False), **extra})
@@ -361,7 +405,7 @@ def _people_panel(request: Request, db: Session, **extra):
     invites = (db.query(Invite).filter(Invite.accepted_at.is_(None))
                .order_by(Invite.created_at.desc()).all())
     now = datetime.now(timezone.utc)
-    return templates.TemplateResponse("_people.html", {
+    return templates.TemplateResponse(request, "_people.html", {
         "request": request, "users": users,
         "invites": [i for i in invites if usr.invite_state(i.expires_at, i.accepted_at, now) == "pending"],
         "me_id": request.state.user_id,
@@ -501,8 +545,8 @@ def _load_invite(db: Session, token: str) -> Invite | None:
 def invite_page(request: Request, token: str, db: Session = Depends(get_db)):
     inv = _load_invite(db, token)
     if not inv:
-        return templates.TemplateResponse("invite.html", {"request": request, "dead": True}, status_code=410)
-    return templates.TemplateResponse("invite.html", {
+        return templates.TemplateResponse(request, "invite.html", {"request": request, "dead": True}, status_code=410)
+    return templates.TemplateResponse(request, "invite.html", {
         "request": request, "token": token, "email": inv.email, "name": inv.name or "",
         "tz_choices": tzs.choices(), "user_tz": tzs.DEFAULT_TZ})
 
@@ -513,16 +557,16 @@ def invite_accept(request: Request, token: str, password: str = Form(""), confir
                   db: Session = Depends(get_db)):
     inv = _load_invite(db, token)
     if not inv:
-        return templates.TemplateResponse("invite.html", {"request": request, "dead": True}, status_code=410)
+        return templates.TemplateResponse(request, "invite.html", {"request": request, "dead": True}, status_code=410)
 
     ctx = {"request": request, "token": token, "email": inv.email, "name": name or inv.name or "",
            "tz_choices": tzs.choices(), "user_tz": tzs.valid_tz(timezone_name) or tzs.DEFAULT_TZ}
     if password != confirm:
-        return templates.TemplateResponse("invite.html", {**ctx, "error": "Passwords don't match."}, status_code=400)
+        return templates.TemplateResponse(request, "invite.html", {**ctx, "error": "Passwords don't match."}, status_code=400)
     if problem := auth.password_problem(password):
-        return templates.TemplateResponse("invite.html", {**ctx, "error": problem}, status_code=400)
+        return templates.TemplateResponse(request, "invite.html", {**ctx, "error": problem}, status_code=400)
     if db.query(User).filter(User.email == inv.email).first():
-        return templates.TemplateResponse("invite.html", {**ctx,
+        return templates.TemplateResponse(request, "invite.html", {**ctx,
             "error": "An account with that email already exists. Try signing in."}, status_code=409)
 
     user = User(email=inv.email, password_hash=auth.hash_password(password),
@@ -597,7 +641,7 @@ def _card(asset: Asset) -> dict:
 
 
 def _render_cards(request: Request, assets, q: str = "", archived: bool = False):
-    return templates.TemplateResponse("_cards.html", {"request": request, "cards": [_card(a) for a in assets], "q": q,
+    return templates.TemplateResponse(request, "_cards.html", {"request": request, "cards": [_card(a) for a in assets], "q": q,
                                       "archived": archived})
 
 
@@ -605,7 +649,7 @@ def _render_cards(request: Request, assets, q: str = "", archived: bool = False)
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request, imported: Optional[int] = None, skipped: Optional[int] = None, import_error: str = "",
           asset: Optional[int] = None, db: Session = Depends(get_db)):
-    return templates.TemplateResponse("index.html", {
+    return templates.TemplateResponse(request, "index.html", {
         "request": request, "user_email": getattr(request.state, "user_email", ""), "user_tz": user_tz_name(request),
         "imported": imported, "skipped": skipped, "import_error": import_error[:200], "version": VERSION,
         "open_asset": asset if asset and db.query(Asset.id).filter(Asset.id == asset).first() else None,
@@ -639,7 +683,7 @@ def _asset_form(request: Request, db: Session, form: dict, error: str = "", stat
     if request.headers.get("HX-Request"):
         status_code = 200
     paths = sorted({location_path(l) for l in db.query(Location).all()} - {""})
-    return templates.TemplateResponse("_asset_form.html", {"request": request, "f": form, "error": error,
+    return templates.TemplateResponse(request, "_asset_form.html", {"request": request, "f": form, "error": error,
                                       "statuses": STATUSES, "paths": paths, "tz_choices": tz_choices_for(form.get("country")),
                                       "countries": geo.countries(), "edit_id": asset_id,
                                       "user_tz": user_tz_name(request)}, status_code=status_code)
@@ -828,7 +872,7 @@ def labels(request: Request, ids: list[int] = Query([]), size: str = "medium", d
     items = [{"a": a, "code": dv.device_code(a.id), "qr": dv.qr_svg(f"{base}/a/{a.id}"),
               "where": a.city or geo.name(a.country) or location_path(a.location)} for a in chosen]
     all_assets = db.query(Asset).filter(Asset.archived_at.is_(None)).order_by(Asset.name).all()
-    return templates.TemplateResponse("labels.html", {
+    return templates.TemplateResponse(request, "labels.html", {
         "request": request, "sheet": sheet, "sheets": dv.SHEETS, "pages": dv.pages(items, sheet), "count": len(items),
         "selected": set(ids), "all_assets": all_assets, "loc": location_path, "base": base})
 
@@ -868,7 +912,7 @@ def _windows_for(request: Request, db: Session, asset: Asset) -> list[WindowView
 
 def _maintenance_section(request: Request, db: Session, asset_id: int, **extra):
     asset = _get_asset(db, asset_id)
-    return templates.TemplateResponse("_maintenance.html", {
+    return templates.TemplateResponse(request, "_maintenance.html", {
         "request": request, "asset_id": asset_id, "windows": _windows_for(request, db, asset),
         **_tz_ctx(request, asset), **extra})
 
@@ -895,7 +939,7 @@ def asset_detail(request: Request, asset_id: int, db: Session, flash: str = "", 
     """Render the device panel. Not a route itself, so flash/error can't be spoofed via the query string."""
     asset = _get_asset(db, asset_id)
     logs = db.query(AuditLog).filter(AuditLog.asset_id == asset_id).order_by(AuditLog.timestamp.desc()).limit(50).all()
-    return templates.TemplateResponse("asset_detail.html", {
+    return templates.TemplateResponse(request, "asset_detail.html", {
         **_agent_ctx(request, asset), **_tz_ctx(request, asset), "logs": logs, "loc": location_path(asset.location),
         "asset_id": asset_id, "windows": _windows_for(request, db, asset),
         "tz_choices": tz_choices_for(asset.country), "countries": geo.countries(),
@@ -907,7 +951,7 @@ def geo_zones(request: Request, country: str = "", timezone_name: str = Query(""
     """Re-render the timezone picker for a country, pre-selecting its zone when there is only one."""
     cc = geo.valid_country(country)
     picked = geo.suggested_tz(cc, tzs.valid_tz(timezone_name)) or tzs.valid_tz(timezone_name)
-    return templates.TemplateResponse("_tz_field.html", {
+    return templates.TemplateResponse(request, "_tz_field.html", {
         "request": request, "tz_choices": tz_choices_for(cc), "selected": picked, "user_tz": user_tz_name(request),
         "hint": (f"Set from {geo.name(cc)}" if picked and picked != tzs.valid_tz(timezone_name)
                  else (f"{geo.name(cc)} has {len(geo.zones_for(cc))} timezones, pick the one for this city"
@@ -1013,7 +1057,7 @@ def update_maintenance(request: Request, mid: int, action: str, db: Session = De
 # ---------------------------------------------------------------- server agent
 @app.get("/assets/{asset_id}/agent", response_class=HTMLResponse)
 def agent_section(request: Request, asset_id: int, db: Session = Depends(get_db)):
-    return templates.TemplateResponse("_agent.html", _agent_ctx(request, _get_asset(db, asset_id)))
+    return templates.TemplateResponse(request, "_agent.html", _agent_ctx(request, _get_asset(db, asset_id)))
 
 
 @app.post("/assets/{asset_id}/agent/token", response_class=HTMLResponse)
@@ -1025,7 +1069,7 @@ def agent_new_token(request: Request, asset_id: int, db: Session = Depends(get_d
     db.add(AuditLog(asset_id=asset_id, action="AGENT_TOKEN_" + ("ROTATED" if replaced else "CREATED"),
                     new_value="Old agent disconnected" if replaced else "Agent token issued"))
     db.commit()
-    return templates.TemplateResponse("_agent.html", _agent_ctx(request, asset, new_token=token))
+    return templates.TemplateResponse(request, "_agent.html", _agent_ctx(request, asset, new_token=token))
 
 
 @app.post("/assets/{asset_id}/agent/revoke", response_class=HTMLResponse)
@@ -1034,7 +1078,7 @@ def agent_revoke(request: Request, asset_id: int, db: Session = Depends(get_db))
     asset.agent_token_hash = asset.agent_last_seen = asset.agent_metrics = None
     db.add(AuditLog(asset_id=asset_id, action="AGENT_REVOKED", new_value="Agent disconnected"))
     db.commit()
-    return templates.TemplateResponse("_agent.html", _agent_ctx(request, asset))
+    return templates.TemplateResponse(request, "_agent.html", _agent_ctx(request, asset))
 
 
 @app.post("/api/agent/heartbeat")
