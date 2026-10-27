@@ -29,7 +29,7 @@ from .scheduling import WindowError, WindowView, build_window, humanise_duration
 
 log = logging.getLogger("lat.main")
 
-VERSION = "0.6.0"
+VERSION = "0.6.1"
 APP_DIR = Path(__file__).parent
 
 app = FastAPI(title="Lean Asset Tracker", version=VERSION)
