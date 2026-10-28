@@ -16,6 +16,9 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    # Without this the db stays down after a reboot or a docker daemon restart
+    # while the api comes back and fails, which looks like an app bug.
+    restart: unless-stopped
 
   api:
     build: .
