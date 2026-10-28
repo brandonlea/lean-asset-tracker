@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
+import asyncio
 import csv
 import io
+import os
 from html import escape as html_escape
 import json
 import logging
@@ -17,9 +19,13 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from . import agent as ag
+from . import alert_dispatch as dispatch
+from . import alert_sink as sink
+from . import alerts as alerts_mod
 from . import auth
 from .database import SessionLocal, engine, get_db
-from .models import Asset, AuditLog, Base, Invite, Location, Maintenance, User, UserSession
+from .models import (AlertChannel, AlertSent, Asset, AuditLog, Base, Invite, Location,
+                     Maintenance, User, UserSession)
 from . import demo
 from . import devices as dv
 from . import geo
@@ -316,6 +322,34 @@ def logout(request: Request, db: Session = Depends(get_db)):
     resp = RedirectResponse("/login", status_code=303)
     resp.delete_cookie(auth.COOKIE, path="/")
     return resp
+
+
+# The dispatcher runs inside the app so a self-hoster never has to set up cron.
+# ALERT_INTERVAL_MIN=0 disables it; it is also off under pytest so the suite
+# never makes outbound requests.
+ALERT_INTERVAL_MIN = int(os.environ.get("ALERT_INTERVAL_MIN", "5"))
+
+
+async def _alert_loop():
+    while True:
+        await asyncio.sleep(ALERT_INTERVAL_MIN * 60)
+        try:
+            db = SessionLocal()
+            try:
+                r = await asyncio.to_thread(dispatch.run_once, db)
+                if r.get("sent"):
+                    log.info("alerts: sent %s to %s channel(s)", r["sent"], r["channels"])
+            finally:
+                db.close()
+        except Exception:                      # noqa: BLE001 - a bad cycle must not kill the loop
+            log.exception("alert cycle failed")
+
+
+@app.on_event("startup")
+async def start_alert_loop():
+    if ALERT_INTERVAL_MIN > 0 and "PYTEST_CURRENT_TEST" not in os.environ:
+        asyncio.create_task(_alert_loop())
+        log.info("alert dispatcher every %s min", ALERT_INTERVAL_MIN)
 
 
 # ---------------------------------------------------------------- account settings
@@ -1112,6 +1146,94 @@ async def agent_heartbeat(request: Request, db: Session = Depends(get_db)):
 def agent_script():
     return FileResponse(APP_DIR / "static" / "lat-agent.py", media_type="text/x-python",
                         filename="lat-agent.py")
+
+
+# ---------------------------------------------------------------- alerts (v0.7.0)
+def _alerts_panel(request: Request, db: Session, **extra):
+    chans = db.query(AlertChannel).order_by(AlertChannel.id).all()
+    return templates.TemplateResponse(request, "_alerts.html", {
+        "request": request, "channels": chans,
+        "is_admin": getattr(request.state, "user_is_admin", False),
+        "muted_assets": db.query(Asset).filter(Asset.alerts_muted.is_(True)).all(),
+        "th": {"disk_warn": alerts_mod.DISK_WARNING_PCT,
+               "disk_crit": alerts_mod.DISK_CRITICAL_PCT,
+               "mem_warn": alerts_mod.MEMORY_WARNING_PCT,
+               "offline_min": int(alerts_mod.OFFLINE_AFTER.total_seconds() // 60)},
+        **extra})
+
+
+def _need_admin(request: Request):
+    if not getattr(request.state, "user_is_admin", False):
+        raise HTTPException(403, "Admins only")
+
+
+@app.get("/settings/alerts", response_class=HTMLResponse)
+def alerts_page(request: Request, db: Session = Depends(get_db)):
+    _need_admin(request)
+    return _alerts_panel(request, db)
+
+
+@app.post("/settings/alerts", response_class=HTMLResponse)
+def alerts_add(request: Request, name: str = Form(""), url: str = Form(""),
+               db: Session = Depends(get_db)):
+    _need_admin(request)
+    name, url = name.strip(), url.strip()
+    if not name:
+        return _alerts_panel(request, db, error="Give the channel a name you will recognise.")
+    try:
+        url = sink.validate_url(url)
+    except sink.ChannelError as e:
+        return _alerts_panel(request, db, error=str(e))
+    ch = AlertChannel(name=name[:80], url=url, kind=sink.detect_kind(url), enabled=True)
+    db.add(ch)
+    db.commit()
+    # Test immediately. An unverified channel is the entire failure mode here.
+    err = dispatch.send_test(db, ch.id)
+    return _alerts_panel(request, db, **({"error": f"Saved, but the test failed: {err}"}
+                                         if err else
+                                         {"ok": f"{ch.name} added and a test message arrived."}))
+
+
+@app.post("/settings/alerts/{cid}/test", response_class=HTMLResponse)
+def alerts_test(cid: int, request: Request, db: Session = Depends(get_db)):
+    _need_admin(request)
+    err = dispatch.send_test(db, cid)
+    return _alerts_panel(request, db, **({"error": err} if err
+                                         else {"ok": "Test message delivered."}))
+
+
+@app.post("/settings/alerts/{cid}/toggle", response_class=HTMLResponse)
+def alerts_toggle(cid: int, request: Request, db: Session = Depends(get_db)):
+    _need_admin(request)
+    ch = db.get(AlertChannel, cid)
+    if ch:
+        ch.enabled = not ch.enabled
+        db.commit()
+    return _alerts_panel(request, db)
+
+
+@app.post("/settings/alerts/{cid}/delete", response_class=HTMLResponse)
+def alerts_delete(cid: int, request: Request, db: Session = Depends(get_db)):
+    _need_admin(request)
+    ch = db.get(AlertChannel, cid)
+    if ch:
+        db.delete(ch)
+        db.commit()
+    return _alerts_panel(request, db, ok="Channel removed.")
+
+
+@app.post("/settings/alerts/run", response_class=HTMLResponse)
+def alerts_run_now(request: Request, db: Session = Depends(get_db)):
+    """Let the user see what would go out right now, instead of waiting."""
+    _need_admin(request)
+    r = dispatch.run_once(db)
+    if r.get("skipped_no_channel"):
+        msg = "Add a channel first — nothing would have been sent."
+    elif r.get("sent"):
+        msg = f"Sent {r['sent']} alert(s) to {r['channels']} channel(s)."
+    else:
+        msg = f"Checked every asset: {r['found']} issue(s) found, nothing new to say."
+    return _alerts_panel(request, db, ok=msg)
 
 
 # ---------------------------------------------------------------- CSV export / import
