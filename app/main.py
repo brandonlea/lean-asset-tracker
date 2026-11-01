@@ -20,11 +20,12 @@ from sqlalchemy.orm import Session
 
 from . import agent as ag
 from . import alert_dispatch as dispatch
+from . import api as api_v1
 from . import alert_sink as sink
 from . import alerts as alerts_mod
 from . import auth
 from .database import SessionLocal, engine, get_db
-from .models import (AlertChannel, AlertSent, Asset, AuditLog, Base, Invite, Location,
+from .models import (AlertChannel, AlertSent, ApiToken, Asset, AuditLog, Base, Invite, Location,
                      Maintenance, User, UserSession)
 from . import demo
 from . import devices as dv
@@ -64,6 +65,9 @@ CSP = (
     "base-uri 'self'; "
     "form-action 'self'"
 )
+
+
+app.include_router(api_v1.router)
 
 
 @app.middleware("http")
@@ -1146,6 +1150,59 @@ async def agent_heartbeat(request: Request, db: Session = Depends(get_db)):
 def agent_script():
     return FileResponse(APP_DIR / "static" / "lat-agent.py", media_type="text/x-python",
                         filename="lat-agent.py")
+
+
+# ---------------------------------------------------------------- API tokens
+def _tokens_panel(request: Request, db: Session, **extra):
+    toks = db.query(ApiToken).order_by(ApiToken.id).all()
+    return templates.TemplateResponse(request, "_api_tokens.html", {
+        "request": request, "tokens": toks,
+        "is_admin": getattr(request.state, "user_is_admin", False),
+        "base_url": os.environ.get("LAT_PUBLIC_URL", "").rstrip("/") or str(request.base_url).rstrip("/"),
+        **extra})
+
+
+@app.get("/settings/api", response_class=HTMLResponse)
+def api_tokens_page(request: Request, db: Session = Depends(get_db)):
+    _need_admin(request)
+    return _tokens_panel(request, db)
+
+
+@app.post("/settings/api", response_class=HTMLResponse)
+def api_token_create(request: Request, name: str = Form(""), scope: str = Form("read"),
+                     db: Session = Depends(get_db)):
+    """Create a token and show it ONCE. We only ever store the hash."""
+    _need_admin(request)
+    name = name.strip()
+    if not name:
+        return _tokens_panel(request, db, error="Give the token a name so you know what to revoke later.")
+    if scope not in api_v1.SCOPES:
+        return _tokens_panel(request, db, error="Scope must be read or write.")
+    raw = api_v1.new_token()
+    db.add(ApiToken(name=name[:80], token_hash=auth.sha256(raw), scope=scope))
+    db.commit()
+    return _tokens_panel(request, db, new_token=raw,
+                         ok=f"Token '{name}' created. Copy it now — it is not stored and cannot be shown again.")
+
+
+@app.post("/settings/api/{tid}/revoke", response_class=HTMLResponse)
+def api_token_revoke(tid: int, request: Request, db: Session = Depends(get_db)):
+    _need_admin(request)
+    t = db.get(ApiToken, tid)
+    if t and t.revoked_at is None:
+        t.revoked_at = datetime.now(timezone.utc)
+        db.commit()
+    return _tokens_panel(request, db, ok="Token revoked. Any script using it stops working immediately.")
+
+
+@app.post("/settings/api/{tid}/delete", response_class=HTMLResponse)
+def api_token_delete(tid: int, request: Request, db: Session = Depends(get_db)):
+    _need_admin(request)
+    t = db.get(ApiToken, tid)
+    if t:
+        db.delete(t)
+        db.commit()
+    return _tokens_panel(request, db, ok="Token removed.")
 
 
 # ---------------------------------------------------------------- alerts (v0.7.0)

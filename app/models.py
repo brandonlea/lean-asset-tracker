@@ -142,3 +142,21 @@ class AlertSent(Base):
     first_seen_at = Column(DateTime(timezone=True), server_default=func.now())
     last_sent_at = Column(DateTime(timezone=True), nullable=True)
     resolved_at = Column(DateTime(timezone=True), nullable=True)
+
+
+class ApiToken(Base):
+    """A credential for the public REST API.
+
+    Stored hashed and shown once, same as agent and invite tokens: a leaked
+    database must not hand anyone working credentials. Scope is read or write
+    so a wall-mounted dashboard can be given a token that cannot change
+    anything.
+    """
+    __tablename__ = "api_tokens"
+    id = Column(Integer, primary_key=True)
+    name = Column(String(80), nullable=False)
+    token_hash = Column(String(64), unique=True, nullable=False, index=True)
+    scope = Column(String(8), nullable=False, server_default="read")   # read | write
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    last_used_at = Column(DateTime(timezone=True), nullable=True)
+    revoked_at = Column(DateTime(timezone=True), nullable=True)

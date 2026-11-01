@@ -1,0 +1,119 @@
+{# API tokens. The copy here is doing real work: people reach for an API to put
+   their kit on their own dashboard, so the page leads with a working example
+   rather than a reference table they have to assemble themselves. #}
+<div class="space-y-6" id="api-panel">
+
+  <div>
+    <h2 class="text-lg font-bold text-white">API access</h2>
+    <p class="mt-1 text-sm text-slate-400 max-w-xl">
+      Read your inventory from scripts, or show it on your own dashboard
+      (Homepage, Homarr, Grafana) without opening this app. Full reference at
+      <a class="text-blue-400 underline" href="/docs" target="_blank" rel="noopener">/docs</a>.
+    </p>
+  </div>
+
+  {% if ok %}
+    <div role="status" class="text-sm px-3 py-2 rounded-lg bg-emerald-500/10 text-emerald-300 ring-1 ring-emerald-500/40">{{ ok }}</div>
+  {% endif %}
+  {% if error %}
+    <div role="alert" class="text-sm px-3 py-2 rounded-lg bg-red-500/10 text-red-300 ring-1 ring-red-500/40">{{ error }}</div>
+  {% endif %}
+
+  {# Shown exactly once. We store only a hash, so we genuinely cannot show it again. #}
+  {% if new_token %}
+    <div class="rounded-xl bg-amber-500/10 ring-1 ring-amber-500/40 p-4">
+      <p class="text-sm font-semibold text-amber-200">Copy this now — it will not be shown again.</p>
+      <code class="mt-2 block break-all text-sm bg-slate-900 rounded-lg p-3 text-emerald-300 select-all">{{ new_token }}</code>
+      <p class="mt-2 text-xs text-amber-200/80">
+        We store only a hash of it, so we cannot recover it for you. Lose it and you make a new one.
+      </p>
+    </div>
+  {% endif %}
+
+  <form hx-post="/settings/api" hx-target="#api-panel" hx-swap="outerHTML"
+        class="rounded-xl bg-slate-800/50 ring-1 ring-slate-700 p-4 space-y-3">
+    <div class="grid gap-3 sm:grid-cols-[1fr_minmax(0,9rem)_auto]">
+      <label class="block">
+        <span class="text-xs text-slate-400">What is it for?</span>
+        <input name="name" required maxlength="80" placeholder="Wall dashboard"
+               class="mt-1 w-full rounded-lg bg-slate-900 border border-slate-700 text-slate-100 px-3 py-2 text-sm">
+      </label>
+      <label class="block">
+        <span class="text-xs text-slate-400">Access</span>
+        <select name="scope"
+                class="mt-1 w-full rounded-lg bg-slate-900 border border-slate-700 text-slate-100 px-3 py-2 text-sm">
+          <option value="read">Read only</option>
+          <option value="write">Read and write</option>
+        </select>
+      </label>
+      <button type="submit"
+              class="sm:self-end rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-semibold px-4 py-2 text-sm min-h-[44px]">
+        Create token
+      </button>
+    </div>
+    <p class="text-xs text-slate-500">
+      Give a dashboard <b class="text-slate-400">read only</b>. A read-only token
+      cannot change or archive anything, so pinning it to a screen in the garage is safe.
+    </p>
+  </form>
+
+  {% if tokens %}
+    <div class="space-y-2">
+      {% for t in tokens %}
+        <div class="rounded-xl bg-slate-800/40 ring-1 ring-slate-700 p-3 flex flex-wrap items-center gap-x-3 gap-y-2">
+          <div class="min-w-0 flex-1">
+            <div class="flex items-center gap-2">
+              <span class="font-semibold text-white truncate">{{ t.name }}</span>
+              <span class="text-[11px] uppercase tracking-wide px-1.5 py-0.5 rounded
+                           {{ 'bg-amber-500/20 text-amber-300' if t.scope == 'write' else 'bg-slate-700 text-slate-300' }}">
+                {{ 'read + write' if t.scope == 'write' else 'read only' }}
+              </span>
+              {% if t.revoked_at %}
+                <span class="text-[11px] px-1.5 py-0.5 rounded bg-red-500/20 text-red-300">revoked</span>
+              {% endif %}
+            </div>
+            <p class="mt-0.5 text-xs text-slate-500">
+              {% if t.last_used_at %}Last used {{ t.last_used_at.strftime('%d %b %H:%M') }} UTC
+              {% else %}Never used{% endif %}
+            </p>
+          </div>
+          <div class="flex items-center gap-2">
+            {% if not t.revoked_at %}
+              <button hx-post="/settings/api/{{ t.id }}/revoke" hx-target="#api-panel" hx-swap="outerHTML"
+                      hx-confirm="Revoke {{ t.name }}? Anything using it stops working straight away."
+                      class="rounded-lg bg-slate-700 hover:bg-amber-600/80 text-slate-100 px-3 py-2 text-xs min-h-[44px]">Revoke</button>
+            {% endif %}
+            <button hx-post="/settings/api/{{ t.id }}/delete" hx-target="#api-panel" hx-swap="outerHTML"
+                    hx-confirm="Remove {{ t.name }} from the list?"
+                    class="rounded-lg bg-slate-700 hover:bg-red-600/80 text-slate-100 px-3 py-2 text-xs min-h-[44px]">Remove</button>
+          </div>
+        </div>
+      {% endfor %}
+    </div>
+  {% else %}
+    <p class="text-sm text-slate-500">No tokens yet. The API refuses every request until you make one.</p>
+  {% endif %}
+
+  {# A copy-paste example beats a reference table for getting someone started. #}
+  <div class="rounded-xl bg-slate-800/30 ring-1 ring-slate-700 p-4 space-y-3">
+    <h3 class="font-semibold text-white text-sm">Try it</h3>
+    <pre class="text-xs bg-slate-900 rounded-lg p-3 overflow-x-auto text-slate-300"><code>curl -H "Authorization: Bearer YOUR_TOKEN" \
+  {{ base_url }}/api/v1/summary</code></pre>
+    <p class="text-xs text-slate-500">Returns totals, what is offline, and what expires soon — one call, enough for a dashboard widget:</p>
+    <pre class="text-xs bg-slate-900 rounded-lg p-3 overflow-x-auto text-slate-400"><code>{
+  "assets": { "total": 14, "online": 9, "offline": 2, "no_agent": 3 },
+  "counts": { "warranty_expiring_60d": 1, "eol_180d": 0, "locations": 6 }
+}</code></pre>
+    <h3 class="font-semibold text-white text-sm pt-2">Other things it does</h3>
+    <ul class="text-xs text-slate-400 space-y-1">
+      <li><code class="text-slate-300">GET /api/v1/assets?offline=true</code> — everything not answering</li>
+      <li><code class="text-slate-300">GET /api/v1/assets?warranty_before=2027-01-01</code> — expiring kit</li>
+      <li><code class="text-slate-300">POST /api/v1/assets</code> — register a new machine from a provisioning script</li>
+      <li><code class="text-slate-300">POST /api/v1/assets/42/history</code> — log a part swap from the terminal</li>
+    </ul>
+    <p class="text-xs text-slate-500">
+      Rate limit {{ 120 }} requests/minute per token. Archiving is supported; permanent
+      deletion deliberately is not — the API should never be the easy way to destroy history.
+    </p>
+  </div>
+</div>

@@ -26,7 +26,10 @@ MIN_PASSWORD = 10
 
 # Paths reachable without a session. Agent endpoints use their own bearer tokens.
 # /invite is public by necessity: the invitee has no account until they accept.
-PUBLIC_PREFIXES = ("/login", "/setup", "/health", "/api/agent/", "/agent/lat-agent.py", "/invite/")
+# /api/v1 skips the SESSION check because it authenticates with its own
+# bearer tokens (see app/api.py). It is not unauthenticated.
+PUBLIC_PREFIXES = ("/login", "/setup", "/health", "/api/agent/", "/api/v1/",
+                   "/agent/lat-agent.py", "/invite/")
 
 # First-run setup token: from env, or generated and logged once at startup.
 SETUP_TOKEN = os.environ.get("LAT_SETUP_TOKEN") or secrets.token_urlsafe(18)
